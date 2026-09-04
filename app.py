@@ -1,7 +1,7 @@
 import streamlit as st
 import datetime
 from sqlalchemy import (
-    create_engine, Column, Integer, String, Float, Boolean, DateTime, Text
+    create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, inspect, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
 
@@ -127,12 +127,31 @@ class Einstellung(Base):
     wert = Column(String)
 
 
+def run_migrations(engine):
+    """Ergänzt fehlende Spalten in bereits bestehenden Tabellen automatisch,
+    damit alte Datenbanken (z. B. bei App-Updates) nicht manuell angepasst werden müssen."""
+    inspector = inspect(engine)
+    with engine.begin() as conn:
+        for table in Base.metadata.tables.values():
+            if not inspector.has_table(table.name):
+                continue
+            existing_cols = {c["name"] for c in inspector.get_columns(table.name)}
+            for col in table.columns:
+                if col.name not in existing_cols:
+                    try:
+                        col_type = col.type.compile(dialect=engine.dialect)
+                        conn.execute(text(f'ALTER TABLE {table.name} ADD COLUMN {col.name} {col_type}'))
+                    except Exception:
+                        pass
+
+
 @st.cache_resource
 def get_engine():
     db_url = st.secrets.get("DB_URL", "sqlite:///bienen.db")
     connect_args = {"check_same_thread": False} if db_url.startswith("sqlite") else {}
     engine = create_engine(db_url, connect_args=connect_args, pool_pre_ping=True)
     Base.metadata.create_all(engine)
+    run_migrations(engine)
     return engine
 
 
