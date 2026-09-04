@@ -33,7 +33,7 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-DEFAULT_IMKER = ["Anna", "Lukas", "Ben", "Mia"]
+DEFAULT_IMKER = ["Niklas", "Gina", "Leander", "Oliver"]
 DEFAULT_VORGAENGE = [
     "Schwarmkontrolle", "Honigraum aufgesetzt", "Honigraum entnommen",
     "Königin gesichtet", "Königin markiert", "Varroa-Behandlung",
@@ -218,10 +218,20 @@ def strip_emoji_prefix(status):
     return teile[1] if len(teile) > 1 else status
 
 
-def pdf_safe(text):
+def pdf_safe(text, max_word_len=40):
     if text is None:
         return ""
-    return text.encode("latin-1", "ignore").decode("latin-1")
+    text = str(text).encode("latin-1", "ignore").decode("latin-1")
+    text = " ".join(text.split())  # mehrfache Leerzeichen/Zeilenumbrüche vereinheitlichen
+    # sehr lange, leerzeichenlose Wörter (z. B. Links) umbrechbar machen, sonst crasht fpdf
+    woerter = text.split(" ")
+    neue_woerter = []
+    for w in woerter:
+        while len(w) > max_word_len:
+            neue_woerter.append(w[:max_word_len])
+            w = w[max_word_len:]
+        neue_woerter.append(w)
+    return " ".join(neue_woerter)
 
 
 def hole_wetter():
@@ -254,18 +264,23 @@ def erstelle_stockkarte_pdf(volk_name, eintraege):
         pdf.set_font("Helvetica", "I", 11)
         pdf.cell(0, 8, "Keine Einträge vorhanden.", ln=1)
     for e in eintraege:
-        pdf.set_font("Helvetica", "B", 11)
-        status_text = strip_emoji_prefix(e.status)
-        kopf = f"{format_ts(e.zeitpunkt)} | {e.imker} | {e.vorgang} | Status: {status_text}"
-        if e.is_nachtrag:
-            kopf += " (NACHTRAG)"
-        pdf.multi_cell(0, 6, pdf_safe(kopf))
-        pdf.set_font("Helvetica", "", 10)
-        if e.notiz:
-            pdf.multi_cell(0, 6, pdf_safe(f"Notiz: {e.notiz}"))
-        if e.wetter_temp is not None:
-            pdf.multi_cell(0, 6, pdf_safe(f"Wetter: {e.wetter_temp:.0f} Grad C, {e.wetter_text}"))
-        pdf.ln(2)
+        try:
+            pdf.set_font("Helvetica", "B", 11)
+            status_text = strip_emoji_prefix(e.status)
+            kopf = f"{format_ts(e.zeitpunkt)} | {e.imker} | {e.vorgang} | Status: {status_text}"
+            if e.is_nachtrag:
+                kopf += " (NACHTRAG)"
+            pdf.multi_cell(0, 6, pdf_safe(kopf))
+            pdf.set_font("Helvetica", "", 10)
+            if e.notiz:
+                pdf.multi_cell(0, 6, pdf_safe(f"Notiz: {e.notiz}"))
+            if e.wetter_temp is not None:
+                pdf.multi_cell(0, 6, pdf_safe(f"Wetter: {e.wetter_temp:.0f} Grad C, {e.wetter_text}"))
+            pdf.ln(2)
+        except Exception:
+            pdf.set_font("Helvetica", "I", 9)
+            pdf.multi_cell(0, 6, pdf_safe(f"{format_ts(e.zeitpunkt)} - Eintrag konnte nicht vollstaendig dargestellt werden."))
+            pdf.ln(2)
     return bytes(pdf.output())
 
 
@@ -323,8 +338,17 @@ DARK_CSS = """
     .stNumberInput input, .stDateInput input, .stTimeInput input {
         background-color: #1A1D25 !important; color: #FFFFFF !important; border: 1px solid #F59E0B !important;
     }
-    div[data-baseweb="popover"] li, ul[data-baseweb="menu"] li, ul[role="listbox"] li {
+    div[data-baseweb="popover"], div[data-baseweb="popover"] * ,
+    ul[data-baseweb="menu"], ul[data-baseweb="menu"] * ,
+    li[role="option"], li[role="option"] *,
+    ul[role="listbox"], ul[role="listbox"] * {
         background-color: #1A1D25 !important; color: #FFFFFF !important;
+    }
+    li[role="option"]:hover, li[aria-selected="true"] {
+        background-color: #F59E0B !important; color: #000000 !important;
+    }
+    li[role="option"]:hover *, li[aria-selected="true"] * {
+        color: #000000 !important;
     }
     .stTabs [data-baseweb="tab"] { color: #FFD700 !important; }
     .stTabs [aria-selected="true"] { color: #000000 !important; background-color: #FFD700; border-radius: 6px 6px 0 0; }
@@ -361,8 +385,17 @@ LIGHT_CSS = """
     .stNumberInput input, .stDateInput input, .stTimeInput input {
         background-color: #F3F4F6 !important; color: #1E293B !important; border: 1px solid #D97706 !important;
     }
-    div[data-baseweb="popover"] li, ul[data-baseweb="menu"] li, ul[role="listbox"] li {
+    div[data-baseweb="popover"], div[data-baseweb="popover"] * ,
+    ul[data-baseweb="menu"], ul[data-baseweb="menu"] * ,
+    li[role="option"], li[role="option"] *,
+    ul[role="listbox"], ul[role="listbox"] * {
         background-color: #FFFFFF !important; color: #1E293B !important;
+    }
+    li[role="option"]:hover, li[aria-selected="true"] {
+        background-color: #D97706 !important; color: #FFFFFF !important;
+    }
+    li[role="option"]:hover *, li[aria-selected="true"] * {
+        color: #FFFFFF !important;
     }
     .stTabs [data-baseweb="tab"] { color: #B45309 !important; }
     .stTabs [aria-selected="true"] { color: #FFFFFF !important; background-color: #D97706; border-radius: 6px 6px 0 0; }
@@ -500,6 +533,23 @@ def render_volk_detail(volk_id):
         st.rerun()
 
     st.title(f"🐝 {volk.name}")
+
+    with st.expander("✏️ Volk umbenennen"):
+        neuer_name = st.text_input("Neuer Name", value=volk.name, key=f"detail_rename_{volk.id}")
+        if st.button("💾 Namen speichern", key=f"detail_rename_save_{volk.id}") and neuer_name and neuer_name != volk.name:
+            db = get_db()
+            try:
+                v = db.query(Volk).get(volk_id)
+                alter_name = v.name
+                v.name = neuer_name
+                for e in db.query(LogEintrag).filter(LogEintrag.volk == alter_name).all():
+                    e.volk = neuer_name
+                db.commit()
+            finally:
+                db.close()
+            st.success(f"Volk wurde zu '{neuer_name}' umbenannt.")
+            st.rerun()
+
     neuer_status = st.selectbox(
         "Status dieses Volkes", STATUS_OPTIONS,
         index=STATUS_OPTIONS.index(volk.status) if volk.status in STATUS_OPTIONS else 0,
@@ -798,7 +848,24 @@ elif page == "⚙️ Verwaltung & Aufgaben":
                     st.warning("Diese Person existiert schon.")
             st.divider()
             for i in db.query(Imker).order_by(Imker.name).all():
-                st.write("• " + i.name)
+                c1, c2, c3 = st.columns([2, 2, 1])
+                c1.write("• " + i.name)
+                neuer_name = c2.text_input(
+                    "Umbenennen", value=i.name, key=f"rename_imker_{i.id}", label_visibility="collapsed"
+                )
+                if c3.button("✏️", key=f"btn_rename_imker_{i.id}") and neuer_name and neuer_name != i.name:
+                    alter_name = i.name
+                    i.name = neuer_name
+                    # bestehende Logbuch- und Kassen-Einträge mit umbenennen, damit die Historie stimmt
+                    for e in db.query(LogEintrag).filter(LogEintrag.imker == alter_name).all():
+                        e.imker = neuer_name
+                    for k in db.query(KassenEintrag).filter(KassenEintrag.person == alter_name).all():
+                        k.person = neuer_name
+                    for a in db.query(Aufgabe).filter(Aufgabe.zugewiesen_an == alter_name).all():
+                        a.zugewiesen_an = neuer_name
+                    db.commit()
+                    st.success(f"'{alter_name}' wurde zu '{neuer_name}' umbenannt.")
+                    st.rerun()
         finally:
             db.close()
 
