@@ -2,3 +2,5 @@ streamlit>=1.32
 sqlalchemy>=2.0
 streamlit-autorefresh
 psycopg2-binary
+requests
+fpdf2
