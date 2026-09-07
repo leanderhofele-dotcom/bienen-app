@@ -27,7 +27,7 @@ except ImportError:
 # GRUNDKONFIGURATION
 # ---------------------------------------------------------------------------
 st.set_page_config(
-    page_title="🐝 Bienen-Logbuch",
+    page_title="Bienen-Logbuch",
     page_icon="🐝",
     layout="centered",
     initial_sidebar_state="expanded",
@@ -51,6 +51,77 @@ WEATTER_CODES = {
     80: "Leichte Regenschauer", 81: "Regenschauer", 82: "Heftige Regenschauer",
     95: "Gewitter", 96: "Gewitter mit Hagel", 99: "Starkes Gewitter mit Hagel",
 }
+
+NAV_ITEMS = [
+    ("📊", "Dashboard"),
+    ("📖", "Logbuch"),
+    ("⚙️", "Verwaltung & Aufgaben"),
+    ("💰", "Imker-Kasse"),
+]
+
+# ---------------------------------------------------------------------------
+# DEZENTES, PROFESSIONELLES ZUSATZ-CSS
+# (Die Grundfarben kommen aus .streamlit/config.toml, damit Streamlit
+#  Dropdowns & Menüs selbst korrekt einfärbt - das ist zuverlässiger als
+#  Farben per CSS zu erzwingen.)
+# ---------------------------------------------------------------------------
+CUSTOM_CSS = """
+<style>
+    h1 { border-bottom: 2px solid #D9A441; padding-bottom: 8px; font-weight: 700; }
+    h1, h2, h3 { letter-spacing: 0.2px; }
+
+    /* Karten */
+    div[data-testid="stVerticalBlockBorderWrapper"] {
+        border-radius: 10px !important;
+        border: 1px solid rgba(217, 164, 65, 0.30) !important;
+    }
+
+    /* Primäre Aktions-Buttons (Speichern etc.) */
+    .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
+    .stDownloadButton > button[kind="primary"] {
+        background-color: #D9A441 !important; color: #12151C !important;
+        font-weight: 600 !important; border: none !important; border-radius: 8px !important;
+    }
+    .stButton > button[kind="primary"]:hover, .stFormSubmitButton > button[kind="primary"]:hover,
+    .stDownloadButton > button[kind="primary"]:hover { background-color: #C08F35 !important; }
+    .stButton > button[kind="primary"] *, .stFormSubmitButton > button[kind="primary"] *,
+    .stDownloadButton > button[kind="primary"] * { color: #12151C !important; }
+
+    /* Sekundäre Buttons etwas dezenter abrunden */
+    .stButton > button[kind="secondary"] { border-radius: 8px !important; }
+
+    /* Sidebar-Navigation im Listen-Stil, aktiver Punkt hervorgehoben */
+    section[data-testid="stSidebar"] .stButton > button {
+        background-color: transparent !important; border: none !important; box-shadow: none !important;
+        text-align: left !important; justify-content: flex-start !important;
+        font-weight: 500 !important; border-radius: 8px !important; padding: 0.55rem 0.9rem !important;
+    }
+    section[data-testid="stSidebar"] .stButton > button:hover { background-color: rgba(217,164,65,0.10) !important; }
+    section[data-testid="stSidebar"] button[kind="primary"] {
+        background-color: rgba(217,164,65,0.16) !important; color: #D9A441 !important; font-weight: 700 !important;
+    }
+    section[data-testid="stSidebar"] button[kind="primary"] * { color: #D9A441 !important; }
+
+    /* Tabs: dezente Akzentfarbe statt vollflächigem Balken */
+    .stTabs [aria-selected="true"] { color: #D9A441 !important; }
+
+    /* Nachtrag-Kennzeichnung */
+    .badge-nachtrag {
+        background-color: rgba(239, 68, 68, 0.85); color: #FFFFFF !important;
+        padding: 2px 8px; border-radius: 6px; font-size: 0.75em; font-weight: 700;
+    }
+
+    /* Footer */
+    .fixed-footer {
+        position: fixed; left: 0; bottom: 0; width: 100%;
+        background-color: #1B1F2A; color: #D9A441 !important; text-align: center;
+        padding: 8px 0; font-weight: 600; font-size: 0.85em;
+        border-top: 1px solid rgba(217,164,65,0.30); z-index: 999;
+    }
+    .block-container { padding-bottom: 60px; }
+</style>
+"""
+st.markdown(CUSTOM_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # DATENBANK-MODELLE
@@ -104,7 +175,7 @@ class Aufgabe(Base):
 class KassenEintrag(Base):
     __tablename__ = "kasse"
     id = Column(Integer, primary_key=True)
-    typ = Column(String)  # "Ausgabe" oder "Einnahme"
+    typ = Column(String)
     betrag = Column(Float)
     person = Column(String)
     beschreibung = Column(Text)
@@ -128,8 +199,7 @@ class Einstellung(Base):
 
 
 def run_migrations(engine):
-    """Ergänzt fehlende Spalten in bereits bestehenden Tabellen automatisch,
-    damit alte Datenbanken (z. B. bei App-Updates) nicht manuell angepasst werden müssen."""
+    """Ergänzt fehlende Spalten in bestehenden Tabellen automatisch."""
     inspector = inspect(engine)
     with engine.begin() as conn:
         for table in Base.metadata.tables.values():
@@ -222,8 +292,7 @@ def pdf_safe(text, max_word_len=40):
     if text is None:
         return ""
     text = str(text).encode("latin-1", "ignore").decode("latin-1")
-    text = " ".join(text.split())  # mehrfache Leerzeichen/Zeilenumbrüche vereinheitlichen
-    # sehr lange, leerzeichenlose Wörter (z. B. Links) umbrechbar machen, sonst crasht fpdf
+    text = " ".join(text.split())
     woerter = text.split(" ")
     neue_woerter = []
     for w in woerter:
@@ -252,166 +321,75 @@ def hole_wetter():
         return None, None
 
 
+def safe_pdf_line(pdf, line_text, size=10, style=""):
+    """Schreibt eine Zeile in die PDF. Setzt vor JEDER Zeile die Cursor-Position
+    zurück und fängt Fehler einzeln ab, damit ein einzelnes problematisches
+    Zeichen niemals den gesamten PDF-Export zum Absturz bringt."""
+    if not line_text:
+        return
+    try:
+        pdf.set_font("Helvetica", style, size)
+        pdf.set_x(pdf.l_margin)
+        pdf.multi_cell(0, 6, pdf_safe(line_text))
+    except Exception:
+        try:
+            pdf.set_x(pdf.l_margin)
+            pdf.ln(6)
+        except Exception:
+            pass
+
+
 def erstelle_stockkarte_pdf(volk_name, eintraege):
     pdf = FPDF()
+    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, pdf_safe(f"Stockkarte - {volk_name}"), ln=1)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 8, pdf_safe(f"Erstellt am {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}"), ln=1)
+    safe_pdf_line(pdf, f"Stockkarte - {volk_name}", size=16, style="B")
+    safe_pdf_line(pdf, f"Erstellt am {datetime.datetime.now().strftime('%d.%m.%Y %H:%M')}", size=10)
     pdf.ln(4)
     if not eintraege:
-        pdf.set_font("Helvetica", "I", 11)
-        pdf.cell(0, 8, "Keine Einträge vorhanden.", ln=1)
+        safe_pdf_line(pdf, "Keine Eintraege vorhanden.", size=11, style="I")
     for e in eintraege:
-        try:
-            pdf.set_font("Helvetica", "B", 11)
-            status_text = strip_emoji_prefix(e.status)
-            kopf = f"{format_ts(e.zeitpunkt)} | {e.imker} | {e.vorgang} | Status: {status_text}"
-            if e.is_nachtrag:
-                kopf += " (NACHTRAG)"
-            pdf.multi_cell(0, 6, pdf_safe(kopf))
-            pdf.set_font("Helvetica", "", 10)
-            if e.notiz:
-                pdf.multi_cell(0, 6, pdf_safe(f"Notiz: {e.notiz}"))
-            if e.wetter_temp is not None:
-                pdf.multi_cell(0, 6, pdf_safe(f"Wetter: {e.wetter_temp:.0f} Grad C, {e.wetter_text}"))
-            pdf.ln(2)
-        except Exception:
-            pdf.set_font("Helvetica", "I", 9)
-            pdf.multi_cell(0, 6, pdf_safe(f"{format_ts(e.zeitpunkt)} - Eintrag konnte nicht vollstaendig dargestellt werden."))
-            pdf.ln(2)
+        status_text = strip_emoji_prefix(e.status)
+        kopf = f"{format_ts(e.zeitpunkt)} | {e.imker} | {e.vorgang} | Status: {status_text}"
+        if e.is_nachtrag:
+            kopf += " (NACHTRAG)"
+        safe_pdf_line(pdf, kopf, size=11, style="B")
+        if e.notiz:
+            safe_pdf_line(pdf, f"Notiz: {e.notiz}", size=10)
+        if e.wetter_temp is not None:
+            safe_pdf_line(pdf, f"Wetter: {e.wetter_temp:.0f} Grad C, {e.wetter_text}", size=10)
+        pdf.ln(2)
     return bytes(pdf.output())
 
 
 # ---------------------------------------------------------------------------
 # SESSION-STATE GRUNDWERTE
 # ---------------------------------------------------------------------------
-st.session_state.setdefault("theme", "dark")
 st.session_state.setdefault("view", "main")
 st.session_state.setdefault("detail_volk_id", None)
 st.session_state.setdefault("editing_id", None)
 st.session_state.setdefault("log_form_version", 0)
 st.session_state.setdefault("kasse_form_version", 0)
+st.session_state.setdefault("current_page", "Dashboard")
 
 # ---------------------------------------------------------------------------
-# SIDEBAR: LOGO, DARSTELLUNG, NAVIGATION
+# SIDEBAR: LOGO & NAVIGATION IM LISTEN-STIL
 # ---------------------------------------------------------------------------
 st.sidebar.markdown("## 🐝 Bienen-Logbuch")
-theme_choice = st.sidebar.radio(
-    "Darstellung", ["🌙 Dunkel", "☀️ Hell"],
-    horizontal=True,
-    index=0 if st.session_state.theme == "dark" else 1,
-)
-st.session_state.theme = "dark" if theme_choice == "🌙 Dunkel" else "light"
+st.sidebar.write("")
 
 if st.session_state.view == "main":
-    page = st.sidebar.radio(
-        "Bereich wählen",
-        ["📊 Dashboard", "📖 Logbuch", "⚙️ Verwaltung & Aufgaben", "💰 Imker-Kasse"],
-        label_visibility="collapsed",
-    )
+    for icon, name in NAV_ITEMS:
+        aktiv = st.session_state.current_page == name
+        if st.sidebar.button(
+            f"{icon}   {name}", key=f"nav_{name}", use_container_width=True,
+            type="primary" if aktiv else "secondary",
+        ):
+            st.session_state.current_page = name
+            st.rerun()
+    page = st.session_state.current_page
 else:
     page = None
-
-# ---------------------------------------------------------------------------
-# CSS: STARKER KONTRAST, DARK & LIGHT MODE
-# ---------------------------------------------------------------------------
-DARK_CSS = """
-<style>
-    .stApp { background-color: #0E1117; }
-    h1, h2, h3, h4, h5, h6, p, span, label, li, div, .stMarkdown { color: #FFFFFF !important; }
-    h1 { text-shadow: 0 0 10px #FFD700; border-bottom: 2px solid #F59E0B; padding-bottom: 8px; }
-    section[data-testid="stSidebar"] { background-color: #000000; border-right: 2px solid #F59E0B; }
-    div[data-testid="stForm"], div[data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #1F2937; border: 1px solid #F59E0B; border-radius: 10px; padding: 10px;
-    }
-    .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-        background-color: #FFD700; color: #000000 !important; font-weight: 700;
-        border: none; border-radius: 8px; box-shadow: 0 0 8px #F59E0B;
-    }
-    .stButton > button:hover, .stFormSubmitButton > button:hover, .stDownloadButton > button:hover {
-        background-color: #F59E0B; color: #000000 !important; box-shadow: 0 0 14px #FFD700;
-    }
-    .stButton > button *, .stFormSubmitButton > button *, .stDownloadButton > button * { color: #000000 !important; }
-    div[data-baseweb="select"] > div, .stTextInput input, .stTextArea textarea,
-    .stNumberInput input, .stDateInput input, .stTimeInput input {
-        background-color: #1A1D25 !important; color: #FFFFFF !important; border: 1px solid #F59E0B !important;
-    }
-    div[data-baseweb="popover"], div[data-baseweb="popover"] * ,
-    ul[data-baseweb="menu"], ul[data-baseweb="menu"] * ,
-    li[role="option"], li[role="option"] *,
-    ul[role="listbox"], ul[role="listbox"] * {
-        background-color: #1A1D25 !important; color: #FFFFFF !important;
-    }
-    li[role="option"]:hover, li[aria-selected="true"] {
-        background-color: #F59E0B !important; color: #000000 !important;
-    }
-    li[role="option"]:hover *, li[aria-selected="true"] * {
-        color: #000000 !important;
-    }
-    .stTabs [data-baseweb="tab"] { color: #FFD700 !important; }
-    .stTabs [aria-selected="true"] { color: #000000 !important; background-color: #FFD700; border-radius: 6px 6px 0 0; }
-    .stTabs [aria-selected="true"] * { color: #000000 !important; }
-    div[data-testid="stMetric"] { background-color: #1F2937; border: 1px solid #F59E0B; border-radius: 10px; padding: 10px; }
-    .badge-nachtrag { background-color: #EF4444; color: #FFFFFF !important; padding: 2px 8px; border-radius: 6px; font-size: 0.75em; font-weight: 700; }
-    .volk-link button { text-align: left !important; }
-    .fixed-footer {
-        position: fixed; left: 0; bottom: 0; width: 100%; background-color: #000000; color: #FFD700 !important;
-        text-align: center; padding: 8px 0; font-weight: 700; border-top: 1px solid #F59E0B; z-index: 999;
-    }
-    .block-container { padding-bottom: 70px; }
-</style>
-"""
-
-LIGHT_CSS = """
-<style>
-    .stApp { background-color: #FFFBEB; }
-    h1, h2, h3, h4, h5, h6, p, span, label, li, div, .stMarkdown { color: #1E293B !important; }
-    h1 { border-bottom: 2px solid #D97706; padding-bottom: 8px; }
-    section[data-testid="stSidebar"] { background-color: #FFF3D6; border-right: 2px solid #D97706; }
-    div[data-testid="stForm"], div[data-testid="stVerticalBlockBorderWrapper"] {
-        background-color: #FFFFFF; border: 1px solid #D97706; border-radius: 10px; padding: 10px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.08);
-    }
-    .stButton > button, .stFormSubmitButton > button, .stDownloadButton > button {
-        background-color: #D97706; color: #FFFFFF !important; font-weight: 700; border: none; border-radius: 8px;
-    }
-    .stButton > button:hover, .stFormSubmitButton > button:hover, .stDownloadButton > button:hover {
-        background-color: #B45309; color: #FFFFFF !important;
-    }
-    .stButton > button *, .stFormSubmitButton > button *, .stDownloadButton > button * { color: #FFFFFF !important; }
-    div[data-baseweb="select"] > div, .stTextInput input, .stTextArea textarea,
-    .stNumberInput input, .stDateInput input, .stTimeInput input {
-        background-color: #F3F4F6 !important; color: #1E293B !important; border: 1px solid #D97706 !important;
-    }
-    div[data-baseweb="popover"], div[data-baseweb="popover"] * ,
-    ul[data-baseweb="menu"], ul[data-baseweb="menu"] * ,
-    li[role="option"], li[role="option"] *,
-    ul[role="listbox"], ul[role="listbox"] * {
-        background-color: #FFFFFF !important; color: #1E293B !important;
-    }
-    li[role="option"]:hover, li[aria-selected="true"] {
-        background-color: #D97706 !important; color: #FFFFFF !important;
-    }
-    li[role="option"]:hover *, li[aria-selected="true"] * {
-        color: #FFFFFF !important;
-    }
-    .stTabs [data-baseweb="tab"] { color: #B45309 !important; }
-    .stTabs [aria-selected="true"] { color: #FFFFFF !important; background-color: #D97706; border-radius: 6px 6px 0 0; }
-    .stTabs [aria-selected="true"] * { color: #FFFFFF !important; }
-    div[data-testid="stMetric"] { background-color: #FFFFFF; border: 1px solid #D97706; border-radius: 10px; padding: 10px; }
-    .badge-nachtrag { background-color: #FCA5A5; color: #7F1D1D !important; padding: 2px 8px; border-radius: 6px; font-size: 0.75em; font-weight: 700; }
-    .volk-link button { text-align: left !important; }
-    .fixed-footer {
-        position: fixed; left: 0; bottom: 0; width: 100%; background-color: #D97706; color: #000000 !important;
-        text-align: center; padding: 8px 0; font-weight: 700; border-top: 1px solid #B45309; z-index: 999;
-    }
-    .block-container { padding-bottom: 70px; }
-</style>
-"""
-
-st.markdown(DARK_CSS if st.session_state.theme == "dark" else LIGHT_CSS, unsafe_allow_html=True)
 
 # ---------------------------------------------------------------------------
 # LIVE-AKTUALISIERUNG
@@ -461,7 +439,7 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
             neu_zeit = c2.time_input("Uhrzeit", value=e.zeitpunkt.time() if e.zeitpunkt else datetime.datetime.now().time(), key=f"edit_zeit_{e.id}")
 
             b1, b2, b3 = st.columns(3)
-            if b1.button("💾 Speichern", key=f"save_{e.id}"):
+            if b1.button("💾 Speichern", key=f"save_{e.id}", type="primary"):
                 db = get_db()
                 try:
                     obj = db.query(LogEintrag).get(e.id)
@@ -508,7 +486,7 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
 
 
 # ---------------------------------------------------------------------------
-# VOLK-DETAILANSICHT (übers Dashboard erreichbar)
+# VOLK-DETAILANSICHT
 # ---------------------------------------------------------------------------
 def render_volk_detail(volk_id):
     db = get_db()
@@ -536,7 +514,7 @@ def render_volk_detail(volk_id):
 
     with st.expander("✏️ Volk umbenennen"):
         neuer_name = st.text_input("Neuer Name", value=volk.name, key=f"detail_rename_{volk.id}")
-        if st.button("💾 Namen speichern", key=f"detail_rename_save_{volk.id}") and neuer_name and neuer_name != volk.name:
+        if st.button("💾 Namen speichern", key=f"detail_rename_save_{volk.id}", type="primary") and neuer_name and neuer_name != volk.name:
             db = get_db()
             try:
                 v = db.query(Volk).get(volk_id)
@@ -598,13 +576,17 @@ def render_volk_detail(volk_id):
                 )
             finally:
                 db.close()
-            pdf_bytes = erstelle_stockkarte_pdf(volk.name, eintraege_chrono)
-            st.download_button(
-                "📄 Stockkarte als PDF herunterladen",
-                data=pdf_bytes,
-                file_name=f"Stockkarte_{volk.name.replace(' ', '_')}.pdf",
-                mime="application/pdf",
-            )
+            try:
+                pdf_bytes = erstelle_stockkarte_pdf(volk.name, eintraege_chrono)
+                st.download_button(
+                    "📄 Stockkarte als PDF herunterladen",
+                    data=pdf_bytes,
+                    file_name=f"Stockkarte_{volk.name.replace(' ', '_')}.pdf",
+                    mime="application/pdf",
+                    type="primary",
+                )
+            except Exception as ex:
+                st.error("Die PDF-Erstellung ist fehlgeschlagen. Bitte versuch es erneut oder melde dich beim Support.")
 
 
 # ---------------------------------------------------------------------------
@@ -613,10 +595,7 @@ def render_volk_detail(volk_id):
 if st.session_state.view == "volk_detail":
     render_volk_detail(st.session_state.detail_volk_id)
 
-# ---------------------------------------------------------------------------
-# SEITE: DASHBOARD
-# ---------------------------------------------------------------------------
-elif page == "📊 Dashboard":
+elif page == "Dashboard":
     st.title("📊 Völker-Dashboard")
     db = get_db()
     try:
@@ -627,13 +606,11 @@ elif page == "📊 Dashboard":
             with st.container(border=True):
                 col1, col2 = st.columns([2, 1])
                 with col1:
-                    st.markdown('<div class="volk-link">', unsafe_allow_html=True)
-                    if st.button(f"🐝 {volk.name}  ➜", key=f"open_{volk.id}", use_container_width=True):
+                    if st.button(f"🐝  {volk.name}   ➜", key=f"open_{volk.id}", use_container_width=True):
                         st.session_state.view = "volk_detail"
                         st.session_state.detail_volk_id = volk.id
                         st.session_state.editing_id = None
                         st.rerun()
-                    st.markdown('</div>', unsafe_allow_html=True)
                 with col2:
                     neuer_status = st.selectbox(
                         "Status",
@@ -655,7 +632,7 @@ elif page == "📊 Dashboard":
                     .all()
                 )
                 if letzte:
-                    st.markdown("**Letzte Einträge:** _(zum Bearbeiten auf den Volksnamen oben klicken)_")
+                    st.caption("Letzte Einträge — zum Bearbeiten auf den Volksnamen oben klicken")
                     for e in letzte:
                         tag = ' <span class="badge-nachtrag">NACHTRAG</span>' if e.is_nachtrag else ""
                         st.markdown(
@@ -669,10 +646,7 @@ elif page == "📊 Dashboard":
     finally:
         db.close()
 
-# ---------------------------------------------------------------------------
-# SEITE: LOGBUCH
-# ---------------------------------------------------------------------------
-elif page == "📖 Logbuch":
+elif page == "Logbuch":
     st.title("📖 Logbuch")
     tab1, tab2 = st.tabs(["✍️ Neuer Eintrag", "🔍 Historie & Suche"])
 
@@ -715,7 +689,7 @@ elif page == "📖 Logbuch":
             else:
                 st.caption("Es wird automatisch der aktuelle Zeitpunkt gespeichert.")
 
-            if st.button("💾 Eintrag speichern", use_container_width=True, key=f"log_save_{v}"):
+            if st.button("💾 Eintrag speichern", use_container_width=True, key=f"log_save_{v}", type="primary"):
                 if ist_nachtrag and nachtrag_datum and nachtrag_zeit:
                     zeitpunkt = datetime.datetime.combine(nachtrag_datum, nachtrag_zeit)
                     wetter_temp, wetter_text = None, None
@@ -774,10 +748,7 @@ elif page == "📖 Logbuch":
         for e in gefiltert:
             render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_volk=True)
 
-# ---------------------------------------------------------------------------
-# SEITE: VERWALTUNG & AUFGABEN
-# ---------------------------------------------------------------------------
-elif page == "⚙️ Verwaltung & Aufgaben":
+elif page == "Verwaltung & Aufgaben":
     st.title("⚙️ Verwaltung & Aufgaben")
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
         ["🐝 Völker", "🛠️ Vorgänge", "👥 Imker", "✅ Aufgaben", "📦 Material", "📍 Standort"]
@@ -797,6 +768,7 @@ elif page == "⚙️ Verwaltung & Aufgaben":
                     st.warning("Ein Volk mit diesem Namen existiert schon.")
 
             st.divider()
+            st.markdown("**Bestehende Völker umbenennen oder archivieren**")
             voelker = db.query(Volk).order_by(Volk.archiviert, Volk.name).all()
             for v in voelker:
                 c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
@@ -804,8 +776,11 @@ elif page == "⚙️ Verwaltung & Aufgaben":
                 neuer_name = c2.text_input(
                     "Umbenennen", value=v.name, key=f"rename_{v.id}", label_visibility="collapsed"
                 )
-                if c3.button("✏️", key=f"btn_rename_{v.id}"):
+                if c3.button("✏️", key=f"btn_rename_{v.id}") and neuer_name and neuer_name != v.name:
+                    alter_name = v.name
                     v.name = neuer_name
+                    for e in db.query(LogEintrag).filter(LogEintrag.volk == alter_name).all():
+                        e.volk = neuer_name
                     db.commit()
                     st.rerun()
                 label = "📤" if v.archiviert else "📥"
@@ -846,7 +821,9 @@ elif page == "⚙️ Verwaltung & Aufgaben":
                     st.rerun()
                 else:
                     st.warning("Diese Person existiert schon.")
+
             st.divider()
+            st.markdown("**Bestehende Personen umbenennen**")
             for i in db.query(Imker).order_by(Imker.name).all():
                 c1, c2, c3 = st.columns([2, 2, 1])
                 c1.write("• " + i.name)
@@ -856,7 +833,6 @@ elif page == "⚙️ Verwaltung & Aufgaben":
                 if c3.button("✏️", key=f"btn_rename_imker_{i.id}") and neuer_name and neuer_name != i.name:
                     alter_name = i.name
                     i.name = neuer_name
-                    # bestehende Logbuch- und Kassen-Einträge mit umbenennen, damit die Historie stimmt
                     for e in db.query(LogEintrag).filter(LogEintrag.imker == alter_name).all():
                         e.imker = neuer_name
                     for k in db.query(KassenEintrag).filter(KassenEintrag.person == alter_name).all():
@@ -880,7 +856,7 @@ elif page == "⚙️ Verwaltung & Aufgaben":
             titel = st.text_input("Aufgabe")
             zugewiesen = st.selectbox("Zugewiesen an", imker_liste) if imker_liste else None
             faellig = st.date_input("Fällig am", format="DD.MM.YYYY")
-            if st.form_submit_button("➕ Aufgabe anlegen") and titel:
+            if st.form_submit_button("➕ Aufgabe anlegen", type="primary") and titel:
                 db = get_db()
                 try:
                     db.add(Aufgabe(
@@ -969,15 +945,12 @@ elif page == "⚙️ Verwaltung & Aufgaben":
         neu_lat = c1.number_input("Breitengrad (Latitude)", value=lat_default, format="%.4f")
         neu_lon = c2.number_input("Längengrad (Longitude)", value=lon_default, format="%.4f")
         st.caption("Tipp: Adresse bei Google Maps eingeben, Rechtsklick auf den Punkt → Koordinaten werden angezeigt.")
-        if st.button("💾 Standort speichern"):
+        if st.button("💾 Standort speichern", type="primary"):
             set_setting("standort_lat", neu_lat)
             set_setting("standort_lon", neu_lon)
             st.success("Standort gespeichert.")
 
-# ---------------------------------------------------------------------------
-# SEITE: IMKER-KASSE
-# ---------------------------------------------------------------------------
-elif page == "💰 Imker-Kasse":
+elif page == "Imker-Kasse":
     st.title("💰 Imker-Kasse")
     db = get_db()
     try:
@@ -1001,7 +974,7 @@ elif page == "💰 Imker-Kasse":
             nachtrag_datum = c1.date_input("Datum", format="DD.MM.YYYY", key=f"kasse_datum_{v}")
             nachtrag_zeit = c2.time_input("Uhrzeit", key=f"kasse_zeit_{v}")
 
-        if st.button("💾 Buchung speichern", use_container_width=True, key=f"kasse_save_{v}"):
+        if st.button("💾 Buchung speichern", use_container_width=True, key=f"kasse_save_{v}", type="primary"):
             zeitpunkt = (
                 datetime.datetime.combine(nachtrag_datum, nachtrag_zeit)
                 if ist_nachtrag and nachtrag_datum and nachtrag_zeit
