@@ -5,6 +5,7 @@ from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, inspect, text
 )
 from sqlalchemy.orm import declarative_base, sessionmaker, scoped_session
+from sqlalchemy.exc import IntegrityError
 
 try:
     from streamlit_autorefresh import st_autorefresh
@@ -337,25 +338,51 @@ def set_setting(schluessel, wert):
 
 
 def seed_defaults():
+    """Legt Standardwerte an, falls die jeweilige Tabelle leer ist.
+    Läuft bewusst defensiv: Falls zwei Nutzer gleichzeitig starten und beide
+    versuchen die Standardwerte anzulegen (Wettlaufsituation), wird ein
+    Konflikt einfach abgefangen statt die App abstürzen zu lassen."""
     db = get_db()
     try:
         if db.query(Imker).count() == 0:
             for name in DEFAULT_IMKER:
                 db.add(Imker(name=name))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+
         if db.query(Vorgang).count() == 0:
             for name in DEFAULT_VORGAENGE:
                 db.add(Vorgang(name=name))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
         else:
             vorhandene = {v.name for v in db.query(Vorgang).all()}
             for name in [VORGANG_ZAEHLUNG, VORGANG_DURCHSICHT, VORGANG_BEHANDLUNG, VORGANG_ERNTE]:
                 if name not in vorhandene:
                     db.add(Vorgang(name=name))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+
         if db.query(Standort).count() == 0:
             db.add(Standort(name="Hauptstandort", lat=50.9375, lon=6.9603))
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+
         if db.query(Volk).count() == 0:
             db.add(Volk(name="Volk 1"))
             db.add(Volk(name="Volk 2"))
-        db.commit()
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
     finally:
         db.close()
 
