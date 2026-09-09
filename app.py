@@ -1,6 +1,8 @@
 import streamlit as st
 import datetime
 import json
+import base64
+import io as pyio
 from sqlalchemy import (
     create_engine, Column, Integer, String, Float, Boolean, DateTime, Text, inspect, text
 )
@@ -30,6 +32,18 @@ try:
     PANDAS_AVAILABLE = True
 except ImportError:
     PANDAS_AVAILABLE = False
+
+try:
+    from PIL import Image
+    PIL_AVAILABLE = True
+except ImportError:
+    PIL_AVAILABLE = False
+
+try:
+    import openpyxl  # noqa: F401  (nur für pandas ExcelWriter benötigt)
+    OPENPYXL_AVAILABLE = True
+except ImportError:
+    OPENPYXL_AVAILABLE = False
 
 # ---------------------------------------------------------------------------
 # GRUNDKONFIGURATION
@@ -68,33 +82,62 @@ WEATTER_CODES = {
     95: "Gewitter", 96: "Gewitter mit Hagel", 99: "Starkes Gewitter mit Hagel",
 }
 STURM_CODES = {95, 96, 99}
+REGEN_CODES = {51, 53, 55, 61, 63, 65, 71, 73, 75, 80, 81, 82, 95, 96, 99}
 TSIS_URL = "https://tsis.fli.de/"
 
 NAV_ITEMS = [
-    ("📊", "Dashboard"),
-    ("📖", "Logbuch"),
-    ("📦", "Material"),
-    ("✅", "Aufgaben"),
-    ("📅", "Kalender"),
-    ("⚙️", "Verwaltung"),
-    ("💰", "Imker-Kasse"),
+    (":material/dashboard:", "Dashboard"),
+    (":material/edit_note:", "Logbuch"),
+    (":material/inventory_2:", "Material"),
+    (":material/task_alt:", "Aufgaben"),
+    (":material/calendar_month:", "Kalender"),
+    (":material/settings:", "Verwaltung"),
+    (":material/payments:", "Imker-Kasse"),
 ]
 
 # ---------------------------------------------------------------------------
-# ZUSATZ-CSS (Grundfarben kommen aus .streamlit/config.toml)
+# ZUSATZ-CSS: Bienenwaben-Hintergrund, goldener Glanz beim aktiven Reiter
+# (Grundfarben kommen aus .streamlit/config.toml)
 # ---------------------------------------------------------------------------
 CUSTOM_CSS = """
 <style>
-    h1 { border-bottom: 2px solid #D9A441; padding-bottom: 8px; font-weight: 700; }
-    h1, h2, h3 { letter-spacing: 0.2px; }
+    .stApp {
+        background-color: #16211B;
+        background-image:
+            radial-gradient(circle at 50% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
+            radial-gradient(circle at 0% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
+            radial-gradient(circle at 100% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent);
+        background-size: 64px 110px;
+        background-attachment: fixed;
+    }
+    section[data-testid="stSidebar"] {
+        background-color: #182620;
+        background-image:
+            radial-gradient(circle at 50% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
+            radial-gradient(circle at 0% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
+            radial-gradient(circle at 100% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent);
+        background-size: 64px 110px;
+        border-right: 1px solid rgba(217,164,65,0.15);
+    }
 
+    h1, h2, h3 { letter-spacing: 0.2px; }
     section[data-testid="stSidebar"] .sidebar-tagline {
         color: #8A8F9C !important; font-size: 0.8em; margin-top: -8px; margin-bottom: 14px;
     }
 
     div[data-testid="stVerticalBlockBorderWrapper"] {
-        border-radius: 12px !important;
-        border: 1px solid rgba(217, 164, 65, 0.28) !important;
+        border-radius: 14px !important;
+        border: 1px solid rgba(217, 164, 65, 0.25) !important;
+        background-color: rgba(22, 33, 27, 0.55) !important;
+        transition: border-color 0.15s ease;
+    }
+    div[data-testid="stVerticalBlockBorderWrapper"]:hover {
+        border-color: rgba(217, 164, 65, 0.55) !important;
+    }
+    div[data-testid="stForm"] {
+        border-radius: 14px !important;
+        border: 1px solid rgba(217, 164, 65, 0.25) !important;
+        background-color: rgba(22, 33, 27, 0.55) !important;
     }
 
     .stButton > button[kind="primary"], .stFormSubmitButton > button[kind="primary"],
@@ -112,11 +155,14 @@ CUSTOM_CSS = """
     section[data-testid="stSidebar"] .stButton > button {
         background-color: transparent !important; border: none !important; box-shadow: none !important;
         text-align: left !important; justify-content: flex-start !important;
-        font-weight: 500 !important; border-radius: 8px !important; padding: 0.55rem 0.9rem !important;
+        font-weight: 500 !important; border-radius: 10px !important; padding: 0.65rem 1rem !important;
+        margin-bottom: 2px;
+        transition: background-color 0.15s ease, box-shadow 0.15s ease;
     }
     section[data-testid="stSidebar"] .stButton > button:hover { background-color: rgba(217,164,65,0.10) !important; }
     section[data-testid="stSidebar"] button[kind="primary"] {
-        background-color: rgba(217,164,65,0.16) !important; color: #D9A441 !important; font-weight: 700 !important;
+        background-color: rgba(217,164,65,0.22) !important; color: #D9A441 !important; font-weight: 700 !important;
+        box-shadow: 0 0 16px rgba(217,164,65,0.30), inset 0 0 0 1px rgba(217,164,65,0.45) !important;
     }
     section[data-testid="stSidebar"] button[kind="primary"] * { color: #D9A441 !important; }
 
@@ -135,6 +181,10 @@ CUSTOM_CSS = """
         background-color: rgba(96, 165, 250, 0.20); color: #93C5FD !important;
         padding: 2px 8px; border-radius: 6px; font-size: 0.72em; font-weight: 600;
         border: 1px solid rgba(96,165,250,0.4);
+    }
+    .flug-card {
+        border-radius: 10px; border: 1px solid rgba(217,164,65,0.28);
+        padding: 10px 14px; text-align: center;
     }
 
     .fixed-footer {
@@ -202,6 +252,8 @@ class LogEintrag(Base):
     is_nachtrag = Column(Boolean, default=False)
     wetter_temp = Column(Float, nullable=True)
     wetter_text = Column(String, nullable=True)
+    foto_data = Column(Text, nullable=True)
+    foto_dateiname = Column(String, nullable=True)
     bienenzahl = Column(Integer, nullable=True)
     wabengassen_besetzt = Column(Integer, nullable=True)
     sanftmut = Column(String, nullable=True)
@@ -338,10 +390,6 @@ def set_setting(schluessel, wert):
 
 
 def seed_defaults():
-    """Legt Standardwerte an, falls die jeweilige Tabelle leer ist.
-    Läuft bewusst defensiv: Falls zwei Nutzer gleichzeitig starten und beide
-    versuchen die Standardwerte anzulegen (Wettlaufsituation), wird ein
-    Konflikt einfach abgefangen statt die App abstürzen zu lassen."""
     db = get_db()
     try:
         if db.query(Imker).count() == 0:
@@ -437,6 +485,21 @@ def pdf_safe(txt, max_word_len=40):
     return " ".join(neue_woerter)
 
 
+def verarbeite_foto(uploaded_file, max_size=1200, quality=80):
+    if uploaded_file is None or not PIL_AVAILABLE:
+        return None, None
+    try:
+        img = Image.open(uploaded_file)
+        img = img.convert("RGB")
+        img.thumbnail((max_size, max_size))
+        buf = pyio.BytesIO()
+        img.save(buf, format="JPEG", quality=quality)
+        b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+        return b64, uploaded_file.name
+    except Exception:
+        return None, None
+
+
 def hole_wetter_fuer_volk(volk_obj):
     if not REQUESTS_AVAILABLE:
         return None, None
@@ -488,6 +551,36 @@ def pruefe_unwetter(lat, lon):
 @st.cache_data(ttl=1800)
 def pruefe_unwetter_cached(standort_id, lat, lon):
     return pruefe_unwetter(lat, lon)
+
+
+def hole_flugwetter(lat, lon):
+    if not REQUESTS_AVAILABLE:
+        return None
+    try:
+        url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true"
+        r = requests.get(url, timeout=5)
+        data = r.json()
+        cw = data.get("current_weather", {})
+        return cw.get("temperature"), cw.get("windspeed"), cw.get("weathercode")
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=1800)
+def hole_flugwetter_cached(standort_id, lat, lon):
+    return hole_flugwetter(lat, lon)
+
+
+def bewerte_flugwetter(temp, wind, code):
+    if temp is None:
+        return "–", "Keine Daten"
+    if code in REGEN_CODES:
+        return "❌", "Niederschlag"
+    if temp < 10:
+        return "❌", "Zu kalt"
+    if temp < 14 or (wind or 0) > 25:
+        return "⚠️", "Grenzwertig"
+    return "✅", "Gutes Flugwetter"
 
 
 def stammbaum_vorfahren(volk_name, alle_dict, max_tiefe=12):
@@ -647,7 +740,10 @@ def alle_daten_als_dict():
             "standorte": [{"name": s.name, "lat": s.lat, "lon": s.lon} for s in db.query(Standort).all()],
             "voelker": [{c.name: getattr(v, c.name) for c in Volk.__table__.columns} for v in db.query(Volk).all()],
             "vorgaenge": [{"name": v.name} for v in db.query(Vorgang).all()],
-            "log_eintraege": [{c.name: getattr(e, c.name) for c in LogEintrag.__table__.columns} for e in db.query(LogEintrag).all()],
+            "log_eintraege": [
+                {c.name: getattr(e, c.name) for c in LogEintrag.__table__.columns if c.name != "foto_data"}
+                for e in db.query(LogEintrag).all()
+            ],
             "aufgaben": [{c.name: getattr(a, c.name) for c in Aufgabe.__table__.columns} for a in db.query(Aufgabe).all()],
             "kasse": [{c.name: getattr(k, c.name) for c in KassenEintrag.__table__.columns} for k in db.query(KassenEintrag).all()],
             "inventar": [{c.name: getattr(m, c.name) for c in InventarItem.__table__.columns} for m in db.query(InventarItem).all()],
@@ -660,6 +756,20 @@ def alle_daten_als_dict():
     return data
 
 
+def erstelle_excel_export():
+    if not PANDAS_AVAILABLE or not OPENPYXL_AVAILABLE:
+        return None
+    daten = alle_daten_als_dict()
+    buffer = pyio.BytesIO()
+    with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
+        for key, rows in daten.items():
+            df = pd.DataFrame(rows) if rows else pd.DataFrame()
+            sheet_name = key[:31]
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 # ---------------------------------------------------------------------------
 # DYNAMISCHE ZUSATZFELDER JE NACH VORGANG (für Stockkarte)
 # ---------------------------------------------------------------------------
@@ -667,13 +777,13 @@ def render_stockkarte_felder(vorgang, keyprefix, defaults=None):
     defaults = defaults or {}
     extra = {}
     if vorgang == VORGANG_ZAEHLUNG:
-        st.markdown("##### 🔢 Zählung")
+        st.markdown("##### Zählung")
         extra["bienenzahl"] = st.number_input(
             "Anzahl gezählte Bienen", min_value=0, step=10,
             value=int(defaults.get("bienenzahl") or 0), key=f"{keyprefix}_bienenzahl",
         )
     elif vorgang == VORGANG_DURCHSICHT:
-        st.markdown("##### 🔍 Durchsicht-Details")
+        st.markdown("##### Durchsicht-Details")
         c1, c2 = st.columns(2)
         extra["wabengassen_besetzt"] = c1.number_input(
             "Besetzte Wabengassen", min_value=0, max_value=30, step=1,
@@ -709,7 +819,7 @@ def render_stockkarte_felder(vorgang, keyprefix, defaults=None):
         extra["baurahmen"] = c6.checkbox("Baurahmen/Drohnenrahmen gegeben", value=bool(defaults.get("baurahmen")), key=f"{keyprefix}_baurahmen")
         extra["honigraum_aufgesetzt"] = c7.checkbox("Honigraum aufgesetzt/erweitert", value=bool(defaults.get("honigraum_aufgesetzt")), key=f"{keyprefix}_honigraum")
     elif vorgang == VORGANG_BEHANDLUNG:
-        st.markdown("##### 💊 Gesundheit & Behandlung")
+        st.markdown("##### Gesundheit & Behandlung")
         extra["varroa_milbenfall"] = st.number_input(
             "Natürlicher Milbenfall (Milben pro Tag)", min_value=0.0, step=0.5,
             value=float(defaults.get("varroa_milbenfall") or 0.0), key=f"{keyprefix}_milbenfall",
@@ -741,7 +851,7 @@ def render_stockkarte_felder(vorgang, keyprefix, defaults=None):
             value=float(defaults.get("fuetterung_menge") or 0.0), key=f"{keyprefix}_futtermenge",
         )
     elif vorgang == VORGANG_ERNTE:
-        st.markdown("##### 🍯 Ertrag & Schleuderung")
+        st.markdown("##### Ertrag & Schleuderung")
         c1, c2 = st.columns(2)
         extra["ernte_kg"] = c1.number_input(
             "Ertrag (kg)", min_value=0.0, step=0.5,
@@ -789,14 +899,14 @@ st.session_state.setdefault("current_page", "Dashboard")
 # ---------------------------------------------------------------------------
 # SIDEBAR: LOGO & NAVIGATION IM LISTEN-STIL
 # ---------------------------------------------------------------------------
-st.sidebar.markdown("## 🐝 Bienen-Logbuch")
+st.sidebar.markdown("## :material/hive: Bienen-Logbuch")
 st.sidebar.markdown('<div class="sidebar-tagline">Gemeinsames Imker-Logbuch</div>', unsafe_allow_html=True)
 
 if st.session_state.view == "main":
     for icon, name in NAV_ITEMS:
         aktiv = st.session_state.current_page == name
         if st.sidebar.button(
-            f"{icon}   {name}", key=f"nav_{name}", use_container_width=True,
+            name, key=f"nav_{name}", use_container_width=True, icon=icon,
             type="primary" if aktiv else "secondary",
         ):
             st.session_state.current_page = name
@@ -827,10 +937,10 @@ def check_new_entries():
     st.session_state.setdefault("seen_kasse_id", current_kasse_id)
 
     if current_log_id > st.session_state.seen_log_id:
-        st.toast(f"🐝 Neuer Logbuch-Eintrag von {last_log.imker}!", icon="🆕")
+        st.toast(f"Neuer Logbuch-Eintrag von {last_log.imker}!", icon=":material/edit_note:")
         st.session_state.seen_log_id = current_log_id
     if current_kasse_id > st.session_state.seen_kasse_id:
-        st.toast(f"💰 Neue Kassen-Buchung von {last_kasse.person}!", icon="🆕")
+        st.toast(f"Neue Kassen-Buchung von {last_kasse.person}!", icon=":material/payments:")
         st.session_state.seen_kasse_id = current_kasse_id
 
 
@@ -842,7 +952,7 @@ check_new_entries()
 def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_volk=False):
     if st.session_state.editing_id == e.id:
         with st.container(border=True):
-            st.markdown("**✏️ Eintrag bearbeiten**")
+            st.markdown("**Eintrag bearbeiten**")
             neu_imker = st.selectbox("Wer", imker_liste, index=imker_liste.index(e.imker) if e.imker in imker_liste else 0, key=f"edit_wer_{e.id}")
             neu_volk = st.selectbox("Volk", volk_liste, index=volk_liste.index(e.volk) if e.volk in volk_liste else 0, key=f"edit_volk_{e.id}")
             neu_vorgang = st.selectbox("Vorgang", vorgang_liste, index=vorgang_liste.index(e.vorgang) if e.vorgang in vorgang_liste else 0, key=f"edit_vorgang_{e.id}")
@@ -852,11 +962,18 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
             neu_datum = c1.date_input("Datum", value=e.zeitpunkt.date() if e.zeitpunkt else datetime.date.today(), format="DD.MM.YYYY", key=f"edit_datum_{e.id}")
             neu_zeit = c2.time_input("Uhrzeit", value=e.zeitpunkt.time() if e.zeitpunkt else datetime.datetime.now().time(), key=f"edit_zeit_{e.id}")
 
+            if e.foto_data:
+                st.image(base64.b64decode(e.foto_data), caption=e.foto_dateiname or "Foto", width=220)
+                foto_entfernen = st.checkbox("Foto entfernen", key=f"edit_foto_entfernen_{e.id}")
+            else:
+                foto_entfernen = False
+            neues_foto = st.file_uploader("Neues Foto hochladen (ersetzt vorhandenes)", type=["jpg", "jpeg", "png"], key=f"edit_foto_{e.id}")
+
             defaults = {c.name: getattr(e, c.name) for c in LogEintrag.__table__.columns}
             extra = render_stockkarte_felder(neu_vorgang, f"edit_{e.id}", defaults)
 
             b1, b2, b3 = st.columns(3)
-            if b1.button("💾 Speichern", key=f"save_{e.id}", type="primary"):
+            if b1.button("Speichern", key=f"save_{e.id}", type="primary", icon=":material/save:"):
                 db = get_db()
                 try:
                     obj = db.query(LogEintrag).get(e.id)
@@ -868,6 +985,13 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
                     obj.zeitpunkt = datetime.datetime.combine(neu_datum, neu_zeit)
                     for feld, wert in extra.items():
                         setattr(obj, feld, wert)
+                    if neues_foto is not None:
+                        foto_b64, foto_name = verarbeite_foto(neues_foto)
+                        obj.foto_data = foto_b64
+                        obj.foto_dateiname = foto_name
+                    elif foto_entfernen:
+                        obj.foto_data = None
+                        obj.foto_dateiname = None
                     db.commit()
                 finally:
                     db.close()
@@ -876,10 +1000,10 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
                 st.session_state.editing_id = None
                 st.success("Eintrag aktualisiert.")
                 st.rerun()
-            if b2.button("❌ Abbrechen", key=f"cancel_{e.id}"):
+            if b2.button("Abbrechen", key=f"cancel_{e.id}", icon=":material/close:"):
                 st.session_state.editing_id = None
                 st.rerun()
-            if b3.button("🗑️ Löschen", key=f"delete_{e.id}"):
+            if b3.button("Löschen", key=f"delete_{e.id}", icon=":material/delete:"):
                 db = get_db()
                 try:
                     obj = db.query(LogEintrag).get(e.id)
@@ -902,16 +1026,18 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
             )
             if e.notiz:
                 st.caption(e.notiz)
+            if e.foto_data:
+                st.image(base64.b64decode(e.foto_data), width=260)
             extra_bits = []
             if e.bienenzahl is not None:
-                extra_bits.append(f"🔢 {e.bienenzahl} Bienen gezählt")
+                extra_bits.append(f"{e.bienenzahl} Bienen gezählt")
             if e.ernte_kg is not None:
-                extra_bits.append(f"🍯 {e.ernte_kg:g} kg geerntet")
+                extra_bits.append(f"{e.ernte_kg:g} kg geerntet")
             if e.varroa_milbenfall is not None:
-                extra_bits.append(f"🦠 Milbenfall: {e.varroa_milbenfall:g}/Tag")
+                extra_bits.append(f"Milbenfall: {e.varroa_milbenfall:g}/Tag")
             if extra_bits:
                 st.caption(" · ".join(extra_bits))
-            if st.button("✏️ Bearbeiten", key=f"edit_btn_{e.id}"):
+            if st.button("Bearbeiten", key=f"edit_btn_{e.id}", icon=":material/edit:"):
                 st.session_state.editing_id = e.id
                 st.rerun()
 
@@ -933,19 +1059,19 @@ def render_volk_detail(volk_id):
 
     if volk is None:
         st.warning("Dieses Volk existiert nicht mehr.")
-        if st.button("⬅ Zurück zum Dashboard"):
+        if st.button("Zurück zum Dashboard", icon=":material/arrow_back:"):
             st.session_state.view = "main"
             st.rerun()
         return
 
-    if st.button("⬅ Zurück zum Dashboard"):
+    if st.button("Zurück zum Dashboard", icon=":material/arrow_back:"):
         st.session_state.view = "main"
         st.session_state.editing_id = None
         st.rerun()
 
-    st.title(f"🐝 {volk.name}")
+    st.header(volk.name, icon=":material/hive:", divider="orange")
 
-    with st.expander("🗂️ Stammdaten (für Stockkarte)"):
+    with st.expander("Stammdaten (für Stockkarte)", icon=":material/badge:"):
         neuer_name = st.text_input("Name des Volkes", value=volk.name, key=f"detail_rename_{volk.id}")
         standort_namen = ["- kein Standort -"] + [s.name for s in standorte]
         aktueller_index = 0
@@ -976,7 +1102,7 @@ def render_volk_detail(volk_id):
         beutenart = c5.text_input("Beutenart (z. B. Zander, DNM, Dadant)", value=volk.beutenart or "", key=f"detail_beute_{volk.id}")
         raehmchenmass = c6.text_input("Rähmchenmaß", value=volk.raehmchenmass or "", key=f"detail_raehmchen_{volk.id}")
 
-        if st.button("💾 Stammdaten speichern", key=f"detail_save_{volk.id}", type="primary"):
+        if st.button("Stammdaten speichern", key=f"detail_save_{volk.id}", type="primary", icon=":material/save:"):
             db = get_db()
             try:
                 v = db.query(Volk).get(volk_id)
@@ -1019,7 +1145,7 @@ def render_volk_detail(volk_id):
             db.close()
         st.rerun()
 
-    tab1, tab2, tab3 = st.tabs(["📜 Komplettes Logbuch", "📄 Stockkarte (PDF)", "🌳 Stammbaum"])
+    tab1, tab2, tab3 = st.tabs([":material/menu_book: Komplettes Logbuch", ":material/picture_as_pdf: Stockkarte (PDF)", ":material/account_tree: Stammbaum"])
 
     with tab1:
         db = get_db()
@@ -1060,11 +1186,12 @@ def render_volk_detail(volk_id):
             try:
                 pdf_bytes = erstelle_stockkarte_pdf(volk, standort_name, eintraege_chrono)
                 st.download_button(
-                    "📄 Stockkarte als PDF herunterladen",
+                    "Stockkarte als PDF herunterladen",
                     data=pdf_bytes,
                     file_name=f"Stockkarte_{volk.name.replace(' ', '_')}.pdf",
                     mime="application/pdf",
                     type="primary",
+                    icon=":material/picture_as_pdf:",
                 )
             except Exception:
                 st.error("Die PDF-Erstellung ist fehlgeschlagen. Bitte versuch es erneut oder melde dich beim Support.")
@@ -1090,30 +1217,50 @@ if st.session_state.view == "volk_detail":
     render_volk_detail(st.session_state.detail_volk_id)
 
 elif page == "Dashboard":
-    st.title("📊 Dashboard")
+    st.header("Dashboard", icon=":material/dashboard:", divider="orange")
 
     db = get_db()
     try:
-        alle_standorte_check = db.query(Standort).all()
+        alle_standorte_check = db.query(Standort).order_by(Standort.name).all()
     finally:
         db.close()
+
     for s in alle_standorte_check:
         if s.lat is not None and s.lon is not None and pruefe_unwetter_cached(s.id, s.lat, s.lon):
-            st.error(f"⚠️ Unwetter an Standort '{s.name}' droht in den nächsten 24 Stunden!")
+            st.error(f"Unwetter an Standort '{s.name}' droht in den nächsten 24 Stunden!", icon=":material/warning:")
 
-    tab_uebersicht, tab_zaehlung = st.tabs(["🐝 Völker-Übersicht", "📈 Zählungen"])
+    if alle_standorte_check:
+        st.markdown("###### :material/air: Flugwetter")
+        cols = st.columns(len(alle_standorte_check))
+        for col, s in zip(cols, alle_standorte_check):
+            ergebnis = hole_flugwetter_cached(s.id, s.lat, s.lon) if s.lat is not None and s.lon is not None else None
+            with col:
+                if ergebnis:
+                    temp, wind, code = ergebnis
+                    symbol, hinweis = bewerte_flugwetter(temp, wind, code)
+                    temp_text = f"{temp:.0f}°C" if temp is not None else "-"
+                    st.markdown(
+                        f'<div class="flug-card"><div style="font-size:1.4em">{symbol}</div>'
+                        f'<div style="font-weight:600">{s.name}</div>'
+                        f'<div>{temp_text}</div><div style="font-size:0.8em;color:#8A8F9C">{hinweis}</div></div>',
+                        unsafe_allow_html=True,
+                    )
+                else:
+                    st.caption(f"{s.name}: keine Wetterdaten")
+
+    tab_uebersicht, tab_zaehlung, tab_statistik = st.tabs([":material/hive: Völker-Übersicht", ":material/bar_chart: Zählungen", ":material/insights: Statistik"])
 
     with tab_uebersicht:
         db = get_db()
         try:
             voelker = db.query(Volk).filter(Volk.archiviert == False).order_by(Volk.name).all()
             if not voelker:
-                st.info("Noch keine Völker angelegt. Geh zu '⚙️ Verwaltung'.")
+                st.info("Noch keine Völker angelegt. Geh zu 'Verwaltung'.")
             for volk in voelker:
                 with st.container(border=True):
                     col1, col2 = st.columns([2, 1])
                     with col1:
-                        if st.button(f"🐝  {volk.name}   ➜", key=f"open_{volk.id}", use_container_width=True):
+                        if st.button(volk.name, key=f"open_{volk.id}", use_container_width=True, icon=":material/hive:"):
                             st.session_state.view = "volk_detail"
                             st.session_state.detail_volk_id = volk.id
                             st.session_state.editing_id = None
@@ -1189,9 +1336,55 @@ elif page == "Dashboard":
                             use_container_width=True, hide_index=True,
                         )
 
+    with tab_statistik:
+        if not PANDAS_AVAILABLE:
+            st.warning("Für Statistiken wird das Paket 'pandas' benötigt.")
+        else:
+            db = get_db()
+            try:
+                ernte_eintraege = db.query(LogEintrag).filter(LogEintrag.vorgang == VORGANG_ERNTE, LogEintrag.ernte_kg.isnot(None)).all()
+                varroa_eintraege = db.query(LogEintrag).filter(LogEintrag.vorgang == VORGANG_BEHANDLUNG, LogEintrag.varroa_milbenfall.isnot(None)).all()
+                alle_voelker_stat = db.query(Volk).all()
+            finally:
+                db.close()
+
+            st.markdown("###### :material/bar_chart: Honigertrag pro Jahr")
+            if not ernte_eintraege:
+                st.caption("Noch keine Ernte-Einträge erfasst.")
+            else:
+                df_ernte = pd.DataFrame([{"Jahr": e.zeitpunkt.year, "Volk": e.volk, "kg": e.ernte_kg} for e in ernte_eintraege])
+                jahres_summe = df_ernte.groupby("Jahr")["kg"].sum()
+                st.bar_chart(jahres_summe)
+
+            st.markdown("###### :material/bug_report: Varroa-Milbenfall im Verlauf")
+            if not varroa_eintraege:
+                st.caption("Noch keine Behandlungs-Einträge mit Milbenfall erfasst.")
+            else:
+                df_varroa = pd.DataFrame([{"Datum": e.zeitpunkt, "Volk": e.volk, "Milbenfall": e.varroa_milbenfall} for e in varroa_eintraege])
+                voelker_opts = sorted(df_varroa["Volk"].unique())
+                gewaehlt = st.multiselect("Völker", voelker_opts, default=voelker_opts, key="stat_varroa_voelker")
+                df_vf = df_varroa[df_varroa["Volk"].isin(gewaehlt)]
+                if not df_vf.empty:
+                    pivot_v = df_vf.pivot_table(index="Datum", columns="Volk", values="Milbenfall", aggfunc="mean")
+                    st.line_chart(pivot_v)
+
+            st.markdown("###### :material/account_tree: Ertrag nach Abstammungslinie")
+            if not ernte_eintraege:
+                st.caption("Noch keine Daten für einen Linienvergleich.")
+            else:
+                alle_dict_stat = {v.name: v for v in alle_voelker_stat}
+
+                def _wurzel(volk_name):
+                    kette = stammbaum_vorfahren(volk_name, alle_dict_stat)
+                    return kette[0] if kette else volk_name
+
+                df_ernte["Linie"] = df_ernte["Volk"].apply(_wurzel)
+                linien_summe = df_ernte.groupby("Linie")["kg"].sum().sort_values(ascending=False)
+                st.bar_chart(linien_summe)
+
 elif page == "Logbuch":
-    st.title("📖 Logbuch")
-    tab1, tab2 = st.tabs(["✍️ Neuer Eintrag", "🔍 Historie & Suche"])
+    st.header("Logbuch", icon=":material/edit_note:", divider="orange")
+    tab1, tab2 = st.tabs([":material/edit_square: Neuer Eintrag", ":material/history: Historie & Suche"])
 
     with tab1:
         db = get_db()
@@ -1205,30 +1398,32 @@ elif page == "Logbuch":
             db.close()
 
         if not volk_liste or not imker_liste:
-            st.warning("Bitte zuerst unter '⚙️ Verwaltung' ein Volk bzw. eine Person anlegen.")
+            st.warning("Bitte zuerst unter 'Verwaltung' ein Volk bzw. eine Person anlegen.")
         else:
             v = st.session_state.log_form_version
 
-            st.markdown("##### 👤 Imker & Volk")
+            st.markdown("##### :material/person: Imker & Volk")
             c1, c2 = st.columns(2)
             wer = c1.selectbox("Wer bist du?", imker_liste, key=f"log_wer_{v}")
             volk = c2.selectbox("Welches Volk?", volk_liste, key=f"log_volk_{v}")
 
-            st.markdown("##### 🛠️ Vorgang & Zustand")
+            st.markdown("##### :material/build: Vorgang & Zustand")
             c3, c4 = st.columns(2)
             vorgang = c3.selectbox("Vorgang/Aktion", vorgang_liste, key=f"log_vorgang_{v}")
             status = c4.selectbox("Status-Update", STATUS_OPTIONS, key=f"log_status_{v}")
 
             if vorgang == VORGANG_SCHWARMKONTROLLE:
                 tage = int(get_setting("schwarm_timer_tage", "7") or 7)
-                st.caption(f"⏱️ Beim Speichern wird automatisch eine Erinnerung für die nächste Schwarmkontrolle in {tage} Tagen angelegt.")
+                st.caption(f"Beim Speichern wird automatisch eine Erinnerung für die nächste Schwarmkontrolle in {tage} Tagen angelegt.")
 
             extra = render_stockkarte_felder(vorgang, f"log_{v}")
 
-            st.markdown("##### 📝 Notizen")
+            st.markdown("##### :material/edit_note: Notizen")
             notiz = st.text_area("Beobachtungen", placeholder="z. B. 3 Brutwaben gesehen, Volk sehr ruhig, Stifte vorhanden", key=f"log_notiz_{v}", label_visibility="collapsed")
 
-            st.markdown("##### 🕘 Zeitpunkt")
+            foto = st.file_uploader("Foto (optional)", type=["jpg", "jpeg", "png"], key=f"log_foto_{v}")
+
+            st.markdown("##### :material/schedule: Zeitpunkt")
             ist_nachtrag = st.toggle("Ist das ein Nachtrag?", key=f"log_nachtrag_{v}")
             nachtrag_datum, nachtrag_zeit = None, None
             if ist_nachtrag:
@@ -1238,7 +1433,7 @@ elif page == "Logbuch":
             else:
                 st.caption("Es wird automatisch der aktuelle Zeitpunkt gespeichert.")
 
-            if st.button("💾 Eintrag speichern", use_container_width=True, key=f"log_save_{v}", type="primary"):
+            if st.button("Eintrag speichern", use_container_width=True, key=f"log_save_{v}", type="primary", icon=":material/save:"):
                 db = get_db()
                 try:
                     volk_obj = db.query(Volk).filter(Volk.name == volk).first()
@@ -1250,10 +1445,13 @@ elif page == "Logbuch":
                         zeitpunkt = datetime.datetime.now()
                         wetter_temp, wetter_text = hole_wetter_fuer_volk(volk_obj)
 
+                    foto_b64, foto_name = verarbeite_foto(foto)
+
                     neuer_eintrag = LogEintrag(
                         imker=wer, volk=volk, vorgang=vorgang, status=status,
                         notiz=notiz, zeitpunkt=zeitpunkt, is_nachtrag=ist_nachtrag,
                         wetter_temp=wetter_temp, wetter_text=wetter_text,
+                        foto_data=foto_b64, foto_dateiname=foto_name,
                     )
                     for feld, wert in extra.items():
                         setattr(neuer_eintrag, feld, wert)
@@ -1266,7 +1464,7 @@ elif page == "Logbuch":
                 if vorgang == VORGANG_SCHWARMKONTROLLE:
                     erstelle_schwarm_timer(volk, wer)
                 st.session_state.log_form_version += 1
-                st.success("Eintrag erfolgreich gespeichert! 🐝")
+                st.success("Eintrag erfolgreich gespeichert!")
                 st.rerun()
 
     with tab2:
@@ -1287,7 +1485,7 @@ elif page == "Logbuch":
         f_imker = c1.selectbox("Imker", imker_opts)
         f_volk = c2.selectbox("Volk", volk_opts)
         f_vorgang = c3.selectbox("Vorgang", vorgang_opts)
-        suchtext = st.text_input("🔍 Freitextsuche (Notizen)")
+        suchtext = st.text_input("Freitextsuche (Notizen)")
 
         gefiltert = alle
         if f_imker != "Alle":
@@ -1304,7 +1502,7 @@ elif page == "Logbuch":
             render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_volk=True)
 
 elif page == "Material":
-    st.title("📦 Material & Inventar")
+    st.header("Material & Inventar", icon=":material/inventory_2:", divider="orange")
     st.markdown("Behalte den Überblick über euer Material, damit niemand versehentlich doppelt einkauft.")
     db = get_db()
     try:
@@ -1312,7 +1510,7 @@ elif page == "Material":
         neu_name = c1.text_input("Artikel", key="inv_neu_name")
         neu_menge = c2.number_input("Menge", min_value=0.0, step=1.0, key="inv_neu_menge")
         neu_einheit = c3.text_input("Einheit", value="Stück", key="inv_neu_einheit")
-        if st.button("➕ Artikel hinzufügen", type="primary") and neu_name:
+        if st.button("Artikel hinzufügen", type="primary", icon=":material/add:") and neu_name:
             if not db.query(InventarItem).filter(InventarItem.name == neu_name).first():
                 db.add(InventarItem(name=neu_name, menge=neu_menge, einheit=neu_einheit))
                 db.commit()
@@ -1330,15 +1528,15 @@ elif page == "Material":
                 c1, c2, c3, c4, c5 = st.columns([2, 1, 1, 1, 1])
                 c1.write(f"**{item.name}**")
                 c2.write(f"{item.menge:g} {item.einheit}")
-                if c3.button("➖", key=f"minus_{item.id}"):
+                if c3.button("", key=f"minus_{item.id}", icon=":material/remove:"):
                     item.menge = max(0, item.menge - 1)
                     db.commit()
                     st.rerun()
-                if c4.button("➕", key=f"plus_{item.id}"):
+                if c4.button("", key=f"plus_{item.id}", icon=":material/add:"):
                     item.menge += 1
                     db.commit()
                     st.rerun()
-                if c5.button("🗑️", key=f"del_inv_{item.id}"):
+                if c5.button("", key=f"del_inv_{item.id}", icon=":material/delete:"):
                     db.delete(item)
                     db.commit()
                     st.rerun()
@@ -1346,7 +1544,7 @@ elif page == "Material":
         db.close()
 
 elif page == "Aufgaben":
-    st.title("✅ Aufgaben")
+    st.header("Aufgaben", icon=":material/task_alt:", divider="orange")
     db = get_db()
     try:
         imker_liste = [i.name for i in db.query(Imker).order_by(Imker.name).all()]
@@ -1363,7 +1561,7 @@ elif page == "Aufgaben":
         c3, c4 = st.columns(2)
         gewaehltes_volk = c3.selectbox("Volk (optional)", ["- Allgemein -"] + volk_liste)
         gewaehlter_vorgang = c4.selectbox("Vorgang/Aktion (optional)", ["- keiner -"] + vorgang_liste)
-        if st.form_submit_button("➕ Aufgabe anlegen", type="primary") and titel:
+        if st.form_submit_button("Aufgabe anlegen", type="primary", icon=":material/add:") and titel:
             db = get_db()
             try:
                 db.add(Aufgabe(
@@ -1388,7 +1586,7 @@ elif page == "Aufgaben":
 
         st.subheader("Offene Aufgaben")
         if not offene_sortiert:
-            st.caption("Keine offenen Aufgaben. 🎉")
+            st.caption("Keine offenen Aufgaben.")
         for a in offene_sortiert:
             with st.container(border=True):
                 zusatz = []
@@ -1396,13 +1594,13 @@ elif page == "Aufgaben":
                     zusatz.append(f"Volk: {a.volk}")
                 if a.vorgang:
                     zusatz.append(f"Vorgang: {a.vorgang}")
-                auto_badge = ' <span class="badge-auto">⏱️ Automatisch</span>' if a.quelle == "schwarm_timer" else ""
+                auto_badge = ' <span class="badge-auto">Automatisch</span>' if a.quelle == "schwarm_timer" else ""
                 c1, c2 = st.columns([4, 1])
-                text = f"**{a.titel}** — {a.zugewiesen_an} — fällig {a.faellig_am}"
+                textzeile = f"**{a.titel}** — {a.zugewiesen_an} — fällig {a.faellig_am}"
                 if zusatz:
-                    text += "  \n_" + " · ".join(zusatz) + "_"
-                c1.markdown(text + auto_badge, unsafe_allow_html=True)
-                if c2.button("✅", key=f"done_top_{a.id}"):
+                    textzeile += "  \n_" + " · ".join(zusatz) + "_"
+                c1.markdown(textzeile + auto_badge, unsafe_allow_html=True)
+                if c2.button("", key=f"done_top_{a.id}", icon=":material/check_circle:"):
                     db2 = get_db()
                     try:
                         obj = db2.query(Aufgabe).get(a.id)
@@ -1420,11 +1618,11 @@ elif page == "Aufgaben":
                     st.success("Erledigt!")
                     st.rerun()
 
-        with st.expander(f"Erledigte Aufgaben ({len(erledigte)})"):
+        with st.expander(f"Erledigte Aufgaben ({len(erledigte)})", icon=":material/history:"):
             for a in erledigte:
                 c1, c2 = st.columns([4, 1])
                 c1.write(f"~~{a.titel}~~ — {a.zugewiesen_an}")
-                if c2.button("↩️", key=f"undo_top_{a.id}"):
+                if c2.button("", key=f"undo_top_{a.id}", icon=":material/undo:"):
                     a.erledigt = False
                     db.commit()
                     st.rerun()
@@ -1432,8 +1630,8 @@ elif page == "Aufgaben":
         db.close()
 
 elif page == "Kalender":
-    st.title("📅 Kalender")
-    tab1, tab2 = st.tabs(["🗓️ Übersicht", "🏖️ Abwesenheiten"])
+    st.header("Kalender", icon=":material/calendar_month:", divider="orange")
+    tab1, tab2 = st.tabs([":material/event: Übersicht", ":material/beach_access: Abwesenheiten"])
 
     with tab1:
         db = get_db()
@@ -1451,14 +1649,14 @@ elif page == "Kalender":
         for a in offene_aufgaben:
             d = parse_datum(a.faellig_am)
             if d:
-                praefix = "⏱️ " if a.quelle == "schwarm_timer" else "✅ "
+                praefix = "⏱ " if a.quelle == "schwarm_timer" else "✓ "
                 text = praefix + a.titel + (f" ({a.volk})" if a.volk else "") + f" — {a.zugewiesen_an}"
                 events.append((d, 1, text))
         for e in log_eintraege:
-            events.append((e.zeitpunkt.date(), 0, f"📖 {e.volk}: {e.vorgang} — {e.imker}"))
+            events.append((e.zeitpunkt.date(), 0, f"{e.volk}: {e.vorgang} — {e.imker}"))
         for ab in abwesenheiten:
             if ab.von_datum:
-                events.append((ab.von_datum.date(), 2, f"🏖️ {ab.person} abwesend bis {ab.bis_datum.strftime('%d.%m.%Y') if ab.bis_datum else '?'}"))
+                events.append((ab.von_datum.date(), 2, f"{ab.person} abwesend bis {ab.bis_datum.strftime('%d.%m.%Y') if ab.bis_datum else '?'}"))
 
         events.sort(key=lambda x: (x[0], x[1]))
 
@@ -1468,7 +1666,7 @@ elif page == "Kalender":
             st.info("Aktuell keine Ereignisse im Kalender.")
         for datum, _, text in events:
             if datum != aktuelles_datum:
-                praefix = "📌 Heute — " if datum == heute else ("⏳ " if datum > heute else "")
+                praefix = "Heute — " if datum == heute else ("" if datum < heute else "")
                 st.markdown(f"**{praefix}{datum.strftime('%d.%m.%Y')}**")
                 aktuelles_datum = datum
             st.write("　" + text)
@@ -1486,7 +1684,7 @@ elif page == "Kalender":
             von = c1.date_input("Von", format="DD.MM.YYYY")
             bis = c2.date_input("Bis", format="DD.MM.YYYY")
             notiz = st.text_input("Notiz (optional, z. B. 'Urlaub in Italien')")
-            if st.form_submit_button("➕ Abwesenheit eintragen", type="primary") and person:
+            if st.form_submit_button("Abwesenheit eintragen", type="primary", icon=":material/add:") and person:
                 db = get_db()
                 try:
                     db.add(Abwesenheit(
@@ -1512,13 +1710,13 @@ elif page == "Kalender":
                 aktiv = ab.von_datum and ab.bis_datum and ab.von_datum.date() <= heute_dt.date() <= ab.bis_datum.date()
                 with st.container(border=True):
                     c1, c2 = st.columns([4, 1])
-                    status_txt = " 🔴 gerade abwesend" if aktiv else ""
+                    status_txt = " (gerade abwesend)" if aktiv else ""
                     zeitraum = f"{ab.von_datum.strftime('%d.%m.%Y')} – {ab.bis_datum.strftime('%d.%m.%Y')}" if ab.von_datum and ab.bis_datum else "-"
                     text = f"**{ab.person}**: {zeitraum}{status_txt}"
                     if ab.notiz:
                         text += f"  \n_{ab.notiz}_"
                     c1.markdown(text)
-                    if c2.button("🗑️", key=f"del_abw_{ab.id}"):
+                    if c2.button("", key=f"del_abw_{ab.id}", icon=":material/delete:"):
                         db.delete(ab)
                         db.commit()
                         st.rerun()
@@ -1526,9 +1724,12 @@ elif page == "Kalender":
             db.close()
 
 elif page == "Verwaltung":
-    st.title("⚙️ Verwaltung")
+    st.header("Verwaltung", icon=":material/settings:", divider="orange")
     tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(
-        ["🐝 Völker", "🛠️ Vorgänge", "👥 Imker", "📍 Standorte", "⏱️ Einstellungen", "💾 Sicherung"]
+        [
+            ":material/hive: Völker", ":material/build: Vorgänge", ":material/group: Imker",
+            ":material/location_on: Standorte", ":material/tune: Einstellungen", ":material/backup: Sicherung",
+        ]
     )
 
     with tab1:
@@ -1539,7 +1740,7 @@ elif page == "Verwaltung":
             neu = c1.text_input("Neues Volk anlegen (Name)")
             standort_namen = ["- kein Standort -"] + [s.name for s in standorte]
             neuer_standort = c2.selectbox("Standort", standort_namen, key="neu_volk_standort")
-            if st.button("➕ Volk hinzufügen") and neu:
+            if st.button("Volk hinzufügen", icon=":material/add:") and neu:
                 if not db.query(Volk).filter(Volk.name == neu).first():
                     passender = next((s for s in standorte if s.name == neuer_standort), None)
                     db.add(Volk(name=neu, standort_id=passender.id if passender else None))
@@ -1554,11 +1755,11 @@ elif page == "Verwaltung":
             voelker = db.query(Volk).order_by(Volk.archiviert, Volk.name).all()
             for v in voelker:
                 c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
-                c1.write(("🗄️ " if v.archiviert else "🟢 ") + v.name)
+                c1.write(("🗄 " if v.archiviert else "") + v.name)
                 neuer_name = c2.text_input(
                     "Umbenennen", value=v.name, key=f"rename_{v.id}", label_visibility="collapsed"
                 )
-                if c3.button("✏️", key=f"btn_rename_{v.id}") and neuer_name and neuer_name != v.name:
+                if c3.button("", key=f"btn_rename_{v.id}", icon=":material/edit:") and neuer_name and neuer_name != v.name:
                     alter_name = v.name
                     v.name = neuer_name
                     for e in db.query(LogEintrag).filter(LogEintrag.volk == alter_name).all():
@@ -1567,8 +1768,8 @@ elif page == "Verwaltung":
                         kind.mutter_volk = neuer_name
                     db.commit()
                     st.rerun()
-                label = "📤" if v.archiviert else "📥"
-                if c4.button(label, key=f"btn_arch_{v.id}"):
+                icon_arch = ":material/unarchive:" if v.archiviert else ":material/archive:"
+                if c4.button("", key=f"btn_arch_{v.id}", icon=icon_arch):
                     v.archiviert = not v.archiviert
                     db.commit()
                     st.rerun()
@@ -1580,7 +1781,7 @@ elif page == "Verwaltung":
         db = get_db()
         try:
             neu = st.text_input("Neuen Vorgang/Aktion hinzufügen")
-            if st.button("➕ Vorgang hinzufügen") and neu:
+            if st.button("Vorgang hinzufügen", icon=":material/add:") and neu:
                 if not db.query(Vorgang).filter(Vorgang.name == neu).first():
                     db.add(Vorgang(name=neu))
                     db.commit()
@@ -1599,7 +1800,7 @@ elif page == "Verwaltung":
         db = get_db()
         try:
             neu = st.text_input("Neue Person hinzufügen")
-            if st.button("➕ Person hinzufügen") and neu:
+            if st.button("Person hinzufügen", icon=":material/add:") and neu:
                 if not db.query(Imker).filter(Imker.name == neu).first():
                     db.add(Imker(name=neu))
                     db.commit()
@@ -1616,7 +1817,7 @@ elif page == "Verwaltung":
                 neuer_name = c2.text_input(
                     "Umbenennen", value=i.name, key=f"rename_imker_{i.id}", label_visibility="collapsed"
                 )
-                if c3.button("✏️", key=f"btn_rename_imker_{i.id}") and neuer_name and neuer_name != i.name:
+                if c3.button("", key=f"btn_rename_imker_{i.id}", icon=":material/edit:") and neuer_name and neuer_name != i.name:
                     alter_name = i.name
                     i.name = neuer_name
                     for e in db.query(LogEintrag).filter(LogEintrag.imker == alter_name).all():
@@ -1632,7 +1833,7 @@ elif page == "Verwaltung":
             db.close()
 
     with tab4:
-        subtab1, subtab2 = st.tabs(["📍 Verwaltung", "🗺️ AFB-Sperrbezirk-Check"])
+        subtab1, subtab2 = st.tabs([":material/edit_location: Verwaltung", ":material/map: AFB-Sperrbezirk-Check"])
 
         with subtab1:
             st.markdown("Legt eure Bienenstandorte an (z. B. Hauptstandort, Rapsfeld). Jedes Volk kann in seinen Stammdaten einem Standort zugeordnet werden — die App holt dann automatisch das passende Wetter für diesen Ort.")
@@ -1643,7 +1844,7 @@ elif page == "Verwaltung":
                 neu_lat = c2.number_input("Breitengrad (Latitude)", value=50.9375, format="%.4f", key="neu_standort_lat")
                 neu_lon = c3.number_input("Längengrad (Longitude)", value=6.9603, format="%.4f", key="neu_standort_lon")
                 st.caption("Tipp: Adresse bei Google Maps eingeben, Rechtsklick auf den Punkt → Koordinaten werden angezeigt.")
-                if st.button("➕ Standort hinzufügen", type="primary") and neu_name:
+                if st.button("Standort hinzufügen", type="primary", icon=":material/add_location:") and neu_name:
                     if not db.query(Standort).filter(Standort.name == neu_name).first():
                         db.add(Standort(name=neu_name, lat=neu_lat, lon=neu_lon))
                         db.commit()
@@ -1659,14 +1860,14 @@ elif page == "Verwaltung":
                         neuer_sname = c1.text_input("Name", value=s.name, key=f"standort_name_{s.id}", label_visibility="collapsed")
                         neuer_slat = c2.number_input("Lat", value=s.lat, format="%.4f", key=f"standort_lat_{s.id}", label_visibility="collapsed")
                         neuer_slon = c3.number_input("Lon", value=s.lon, format="%.4f", key=f"standort_lon_{s.id}", label_visibility="collapsed")
-                        if c4.button("💾", key=f"standort_save_{s.id}"):
+                        if c4.button("", key=f"standort_save_{s.id}", icon=":material/save:"):
                             s.name = neuer_sname
                             s.lat = neuer_slat
                             s.lon = neuer_slon
                             db.commit()
                             st.success("Gespeichert.")
                             st.rerun()
-                        if st.button("🗑️ Standort löschen", key=f"standort_del_{s.id}"):
+                        if st.button("Standort löschen", key=f"standort_del_{s.id}", icon=":material/delete:"):
                             betroffene = db.query(Volk).filter(Volk.standort_id == s.id).all()
                             for v in betroffene:
                                 v.standort_id = None
@@ -1688,7 +1889,7 @@ elif page == "Verwaltung":
             for s in standorte:
                 with st.container(border=True):
                     st.markdown(f"**{s.name}** ({s.lat:.4f}, {s.lon:.4f})")
-                    st.link_button("🗺️ Zur TSIS-Seuchenkarte (Friedrich-Loeffler-Institut)", TSIS_URL, type="primary")
+                    st.link_button("Zur TSIS-Seuchenkarte (Friedrich-Loeffler-Institut)", TSIS_URL, type="primary", icon=":material/map:")
             st.caption(
                 "Die TSIS-Karte (TierSeuchenInformationsSystem) des Friedrich-Loeffler-Instituts ist die "
                 "bundesweite amtliche Quelle für gemeldete Sperrbezirke, auch für Baden-Württemberg. Für "
@@ -1700,7 +1901,7 @@ elif page == "Verwaltung":
         st.markdown("Stelle hier ein, nach wie vielen Tagen die App automatisch an die nächste Schwarmkontrolle erinnern soll.")
         aktuell = int(get_setting("schwarm_timer_tage", "7") or 7)
         neu = st.number_input("Schwarmkontroll-Intervall (Tage)", min_value=1, max_value=30, value=aktuell)
-        if st.button("💾 Speichern", type="primary"):
+        if st.button("Speichern", type="primary", icon=":material/save:"):
             set_setting("schwarm_timer_tage", neu)
             st.success("Gespeichert.")
 
@@ -1715,24 +1916,41 @@ elif page == "Verwaltung":
         anzahl_log = len(daten["log_eintraege"])
         anzahl_kasse = len(daten["kasse"])
         st.caption(f"Aktuell gespeichert: {anzahl_log} Logbuch-Einträge, {anzahl_kasse} Kassen-Buchungen.")
+
+        c1, c2 = st.columns(2)
         json_bytes = json.dumps(daten, default=str, ensure_ascii=False, indent=2).encode("utf-8")
-        st.download_button(
-            "⬇️ Komplettes Backup herunterladen (JSON)",
+        c1.download_button(
+            "Backup als JSON",
             data=json_bytes,
             file_name=f"bienen_backup_{datetime.date.today()}.json",
             mime="application/json",
             type="primary",
+            icon=":material/download:",
+            use_container_width=True,
         )
+        if PANDAS_AVAILABLE and OPENPYXL_AVAILABLE:
+            excel_bytes = erstelle_excel_export()
+            c2.download_button(
+                "Backup als Excel",
+                data=excel_bytes,
+                file_name=f"bienen_backup_{datetime.date.today()}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                type="primary",
+                icon=":material/table_view:",
+                use_container_width=True,
+            )
+        else:
+            c2.caption("Für Excel-Export werden 'pandas' und 'openpyxl' benötigt.")
 
 elif page == "Imker-Kasse":
-    st.title("💰 Imker-Kasse")
+    st.header("Imker-Kasse", icon=":material/payments:", divider="orange")
     db = get_db()
     try:
         imker_liste = [i.name for i in db.query(Imker).order_by(Imker.name).all()]
     finally:
         db.close()
 
-    tab1, tab2, tab3 = st.tabs(["✍️ Buchung erfassen", "📈 Kassensturz", "🍯 Reservierungen"])
+    tab1, tab2, tab3 = st.tabs([":material/receipt_long: Buchung erfassen", ":material/account_balance_wallet: Kassensturz", ":material/local_florist: Reservierungen"])
 
     with tab1:
         v = st.session_state.kasse_form_version
@@ -1748,7 +1966,7 @@ elif page == "Imker-Kasse":
             nachtrag_datum = c1.date_input("Datum", format="DD.MM.YYYY", key=f"kasse_datum_{v}")
             nachtrag_zeit = c2.time_input("Uhrzeit", key=f"kasse_zeit_{v}")
 
-        if st.button("💾 Buchung speichern", use_container_width=True, key=f"kasse_save_{v}", type="primary"):
+        if st.button("Buchung speichern", use_container_width=True, key=f"kasse_save_{v}", type="primary", icon=":material/save:"):
             zeitpunkt = (
                 datetime.datetime.combine(nachtrag_datum, nachtrag_zeit)
                 if ist_nachtrag and nachtrag_datum and nachtrag_zeit
@@ -1817,7 +2035,7 @@ elif page == "Imker-Kasse":
                 for line in ausgleich:
                     st.markdown("- " + line)
             else:
-                st.caption("Alles ausgeglichen. ⚖️")
+                st.caption("Alles ausgeglichen.")
         else:
             st.caption("Noch keine Ausgaben erfasst.")
 
@@ -1825,10 +2043,9 @@ elif page == "Imker-Kasse":
         st.subheader("Alle Buchungen")
         for e in alle:
             tag = ' <span class="badge-nachtrag">NACHTRAG</span>' if e.is_nachtrag else ""
-            symbol = "🔴" if e.typ == "Ausgabe" else "🟢"
             with st.container(border=True):
                 st.markdown(
-                    f"{symbol} **{format_ts(e.zeitpunkt)}** — {e.person} — {e.betrag:.2f} € — {e.beschreibung}{tag}",
+                    f"**{format_ts(e.zeitpunkt)}** — {e.person} — {e.betrag:.2f} € — {e.beschreibung} ({e.typ}){tag}",
                     unsafe_allow_html=True,
                 )
 
@@ -1841,7 +2058,7 @@ elif page == "Imker-Kasse":
             sorte = c2.text_input("Sorte (z. B. Frühtracht)")
             status_res = st.selectbox("Status", ["Reserviert", "Bezahlt", "Abgeholt"])
             notiz_res = st.text_input("Notiz (optional)")
-            if st.form_submit_button("➕ Reservierung anlegen", type="primary") and kunde:
+            if st.form_submit_button("Reservierung anlegen", type="primary", icon=":material/add:") and kunde:
                 db = get_db()
                 try:
                     db.add(Reservierung(
@@ -1877,7 +2094,7 @@ elif page == "Imker-Kasse":
                         r.status = neuer_status_res
                         db.commit()
                         st.rerun()
-                    if c3.button("🗑️", key=f"res_del_{r.id}"):
+                    if c3.button("", key=f"res_del_{r.id}", icon=":material/delete:"):
                         db.delete(r)
                         db.commit()
                         st.rerun()
