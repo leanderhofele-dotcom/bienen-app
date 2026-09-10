@@ -184,14 +184,10 @@ CUSTOM_CSS = """
 
     .fixed-footer {
         position: fixed; left: 0; bottom: 0; width: 100%;
-        background-color: #1B1F2A; color: #D9A441 !important; text-align: center;
+        background-color: #16211B; color: #D9A441 !important; text-align: center;
         padding: 8px 0; font-weight: 600; font-size: 0.85em; letter-spacing: 0.3px;
         border-top: 1px solid rgba(217,164,65,0.30); z-index: 999;
         text-shadow: 0 0 8px rgba(217,164,65,0.65), 0 0 18px rgba(217,164,65,0.25);
-    }
-    .fixed-footer span[data-testid="stIconMaterial"] {
-        vertical-align: middle; font-size: 1.1em;
-        filter: drop-shadow(0 0 6px rgba(217,164,65,0.7));
     }
     .block-container { padding-bottom: 60px; }
 </style>
@@ -2336,6 +2332,6 @@ elif page == "Imker-Kasse":
 # FOOTER
 # ---------------------------------------------------------------------------
 st.markdown(
-    '<div class="fixed-footer">:material/hive: Rettet die Bienen, scheißt auf die Bäume :material/hive:</div>',
+    '<div class="fixed-footer">🐝 Rettet die Bienen, scheißt auf die Bäume 🐝</div>',
     unsafe_allow_html=True,
 )
