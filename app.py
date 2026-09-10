@@ -62,6 +62,7 @@ VORGANG_DURCHSICHT = "Durchsicht (Stockkarte)"
 VORGANG_BEHANDLUNG = "Behandlung (Stockkarte)"
 VORGANG_ERNTE = "Ernte / Schleuderung (Stockkarte)"
 VORGANG_SCHWARMKONTROLLE = "Schwarmkontrolle"
+GESCHUETZTE_VORGAENGE = {VORGANG_ZAEHLUNG, VORGANG_DURCHSICHT, VORGANG_BEHANDLUNG, VORGANG_ERNTE, VORGANG_SCHWARMKONTROLLE}
 
 DEFAULT_VORGAENGE = [
     VORGANG_SCHWARMKONTROLLE, "Honigraum aufgesetzt", "Honigraum entnommen",
@@ -184,8 +185,13 @@ CUSTOM_CSS = """
     .fixed-footer {
         position: fixed; left: 0; bottom: 0; width: 100%;
         background-color: #1B1F2A; color: #D9A441 !important; text-align: center;
-        padding: 8px 0; font-weight: 600; font-size: 0.85em;
+        padding: 8px 0; font-weight: 600; font-size: 0.85em; letter-spacing: 0.3px;
         border-top: 1px solid rgba(217,164,65,0.30); z-index: 999;
+        text-shadow: 0 0 8px rgba(217,164,65,0.65), 0 0 18px rgba(217,164,65,0.25);
+    }
+    .fixed-footer span[data-testid="stIconMaterial"] {
+        vertical-align: middle; font-size: 1.1em;
+        filter: drop-shadow(0 0 6px rgba(217,164,65,0.7));
     }
     .block-container { padding-bottom: 60px; }
 </style>
@@ -353,6 +359,13 @@ def get_engine():
     Base.metadata.create_all(engine)
     run_migrations(engine)
     return engine
+
+
+def ist_dauerhafte_datenbank():
+    """True, wenn eine echte Cloud-Datenbank (z.B. Supabase) konfiguriert ist.
+    False, wenn auf die lokale, bei jedem Neustart geleerte SQLite-Datei zurückgefallen wird."""
+    db_url = st.secrets.get("DB_URL", None)
+    return bool(db_url) and not db_url.startswith("sqlite")
 
 
 def get_db():
@@ -726,16 +739,17 @@ def erstelle_stockkarte_pdf(volk, standort_name, eintraege):
     return bytes(pdf.output())
 
 
-def alle_daten_als_dict():
+def alle_daten_als_dict(inkl_fotos=True):
     db = get_db()
     try:
+        log_columns = [c.name for c in LogEintrag.__table__.columns if inkl_fotos or c.name != "foto_data"]
         data = {
             "imker": [{"name": i.name} for i in db.query(Imker).all()],
             "standorte": [{"name": s.name, "lat": s.lat, "lon": s.lon} for s in db.query(Standort).all()],
             "voelker": [{c.name: getattr(v, c.name) for c in Volk.__table__.columns} for v in db.query(Volk).all()],
             "vorgaenge": [{"name": v.name} for v in db.query(Vorgang).all()],
             "log_eintraege": [
-                {c.name: getattr(e, c.name) for c in LogEintrag.__table__.columns if c.name != "foto_data"}
+                {c: getattr(e, c) for c in log_columns}
                 for e in db.query(LogEintrag).all()
             ],
             "aufgaben": [{c.name: getattr(a, c.name) for c in Aufgabe.__table__.columns} for a in db.query(Aufgabe).all()],
@@ -753,7 +767,7 @@ def alle_daten_als_dict():
 def erstelle_excel_export():
     if not PANDAS_AVAILABLE or not OPENPYXL_AVAILABLE:
         return None
-    daten = alle_daten_als_dict()
+    daten = alle_daten_als_dict(inkl_fotos=False)
     buffer = pyio.BytesIO()
     with pd.ExcelWriter(buffer, engine="openpyxl") as writer:
         for key, rows in daten.items():
@@ -762,6 +776,87 @@ def erstelle_excel_export():
             df.to_excel(writer, sheet_name=sheet_name, index=False)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def _parse_iso_datetime(wert):
+    if not wert:
+        return None
+    try:
+        return datetime.datetime.fromisoformat(str(wert))
+    except Exception:
+        return None
+
+
+def stelle_backup_wieder_her(daten):
+    """Löscht alle bestehenden Daten und spielt den Inhalt eines JSON-Backups ein."""
+    db = get_db()
+    try:
+        for modell in [LogEintrag, KassenEintrag, Aufgabe, InventarItem, Reservierung,
+                       Abwesenheit, Volk, Imker, Vorgang, Standort, Einstellung]:
+            db.query(modell).delete()
+        db.commit()
+
+        for row in daten.get("imker", []):
+            db.add(Imker(name=row["name"]))
+        for row in daten.get("standorte", []):
+            db.add(Standort(name=row["name"], lat=row.get("lat"), lon=row.get("lon")))
+        for row in daten.get("vorgaenge", []):
+            db.add(Vorgang(name=row["name"]))
+        db.commit()
+
+        volk_felder = set(Volk.__table__.columns.keys())
+        for row in daten.get("voelker", []):
+            db.add(Volk(**{k: v for k, v in row.items() if k in volk_felder}))
+        db.commit()
+
+        log_felder = set(LogEintrag.__table__.columns.keys())
+        for row in daten.get("log_eintraege", []):
+            kwargs = {k: v for k, v in row.items() if k in log_felder}
+            if "zeitpunkt" in kwargs:
+                kwargs["zeitpunkt"] = _parse_iso_datetime(kwargs["zeitpunkt"])
+            db.add(LogEintrag(**kwargs))
+        db.commit()
+
+        aufgaben_felder = set(Aufgabe.__table__.columns.keys())
+        for row in daten.get("aufgaben", []):
+            db.add(Aufgabe(**{k: v for k, v in row.items() if k in aufgaben_felder}))
+        db.commit()
+
+        kasse_felder = set(KassenEintrag.__table__.columns.keys())
+        for row in daten.get("kasse", []):
+            kwargs = {k: v for k, v in row.items() if k in kasse_felder}
+            if "zeitpunkt" in kwargs:
+                kwargs["zeitpunkt"] = _parse_iso_datetime(kwargs["zeitpunkt"])
+            db.add(KassenEintrag(**kwargs))
+        db.commit()
+
+        inv_felder = set(InventarItem.__table__.columns.keys())
+        for row in daten.get("inventar", []):
+            db.add(InventarItem(**{k: v for k, v in row.items() if k in inv_felder}))
+        db.commit()
+
+        res_felder = set(Reservierung.__table__.columns.keys())
+        for row in daten.get("reservierungen", []):
+            kwargs = {k: v for k, v in row.items() if k in res_felder}
+            if "erstellt_am" in kwargs:
+                kwargs["erstellt_am"] = _parse_iso_datetime(kwargs["erstellt_am"])
+            db.add(Reservierung(**kwargs))
+        db.commit()
+
+        abw_felder = set(Abwesenheit.__table__.columns.keys())
+        for row in daten.get("abwesenheiten", []):
+            kwargs = {k: v for k, v in row.items() if k in abw_felder}
+            for feld in ("von_datum", "bis_datum"):
+                if feld in kwargs:
+                    kwargs[feld] = _parse_iso_datetime(kwargs[feld])
+            db.add(Abwesenheit(**kwargs))
+        db.commit()
+
+        for row in daten.get("einstellungen", []):
+            db.add(Einstellung(schluessel=row["schluessel"], wert=row["wert"]))
+        db.commit()
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -896,18 +991,25 @@ st.session_state.setdefault("current_page", "Dashboard")
 st.sidebar.markdown("## :material/hive: Bienen-Logbuch")
 st.sidebar.markdown('<div class="sidebar-tagline">Gemeinsames Imker-Logbuch</div>', unsafe_allow_html=True)
 
-if st.session_state.view == "main":
-    for icon, name in NAV_ITEMS:
-        aktiv = st.session_state.current_page == name
-        if st.sidebar.button(
-            name, key=f"nav_{name}", use_container_width=True, icon=icon,
-            type="primary" if aktiv else "secondary",
-        ):
-            st.session_state.current_page = name
-            st.rerun()
-    page = st.session_state.current_page
-else:
-    page = None
+for icon, name in NAV_ITEMS:
+    aktiv = (st.session_state.view == "main") and (st.session_state.current_page == name)
+    if st.sidebar.button(
+        name, key=f"nav_{name}", use_container_width=True, icon=icon,
+        type="primary" if aktiv else "secondary",
+    ):
+        st.session_state.current_page = name
+        st.session_state.view = "main"
+        st.session_state.editing_id = None
+        st.rerun()
+page = st.session_state.current_page
+
+if not ist_dauerhafte_datenbank():
+    st.error(
+        "Keine dauerhafte Datenbank-Verbindung gefunden (DB_URL fehlt oder ist falsch). "
+        "Alle Eingaben gehen beim nächsten Neustart der App verloren! Bitte in Streamlit "
+        "Cloud unter 'Settings → Secrets' prüfen, ob DB_URL korrekt hinterlegt ist.",
+        icon=":material/warning:",
+    )
 
 # ---------------------------------------------------------------------------
 # LIVE-AKTUALISIERUNG
@@ -949,7 +1051,13 @@ def render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_vo
             st.markdown("**Eintrag bearbeiten**")
             neu_imker = st.selectbox("Wer", imker_liste, index=imker_liste.index(e.imker) if e.imker in imker_liste else 0, key=f"edit_wer_{e.id}")
             neu_volk = st.selectbox("Volk", volk_liste, index=volk_liste.index(e.volk) if e.volk in volk_liste else 0, key=f"edit_volk_{e.id}")
-            neu_vorgang = st.selectbox("Vorgang", vorgang_liste, index=vorgang_liste.index(e.vorgang) if e.vorgang in vorgang_liste else 0, key=f"edit_vorgang_{e.id}")
+            neu_vorgang = st.pills(
+                "Vorgang", vorgang_liste,
+                default=e.vorgang if e.vorgang in vorgang_liste else vorgang_liste[0],
+                key=f"edit_vorgang_{e.id}",
+            )
+            if neu_vorgang is None:
+                neu_vorgang = e.vorgang if e.vorgang in vorgang_liste else vorgang_liste[0]
             neu_status = st.selectbox("Status", STATUS_OPTIONS, index=STATUS_OPTIONS.index(e.status) if e.status in STATUS_OPTIONS else 0, key=f"edit_status_{e.id}")
             neu_notiz = st.text_area("Notizen", value=e.notiz or "", key=f"edit_notiz_{e.id}")
             c1, c2 = st.columns(2)
@@ -1152,10 +1260,36 @@ def render_volk_detail(volk_id):
             )
         finally:
             db.close()
-        st.caption(f"{len(eintraege)} Einträge für dieses Volk")
+
+        suchtext = st.text_input(
+            "Suche in diesem Volk", placeholder="Notizen durchsuchen…",
+            key=f"volk_suche_{volk.id}", label_visibility="collapsed",
+            icon=":material/search:",
+        )
+        with st.expander("Erweiterte Suche", icon=":material/tune:"):
+            c1, c2 = st.columns(2)
+            f_vorgang = c1.selectbox("Vorgang", ["Alle"] + vorgang_liste, key=f"volk_suche_vorgang_{volk.id}")
+            f_imker = c2.selectbox("Person", ["Alle"] + imker_liste, key=f"volk_suche_imker_{volk.id}")
+            c3, c4 = st.columns(2)
+            f_von = c3.date_input("Von", value=None, format="DD.MM.YYYY", key=f"volk_suche_von_{volk.id}")
+            f_bis = c4.date_input("Bis", value=None, format="DD.MM.YYYY", key=f"volk_suche_bis_{volk.id}")
+
+        gefiltert = eintraege
+        if suchtext:
+            gefiltert = [e for e in gefiltert if suchtext.lower() in (e.notiz or "").lower()]
+        if f_vorgang != "Alle":
+            gefiltert = [e for e in gefiltert if e.vorgang == f_vorgang]
+        if f_imker != "Alle":
+            gefiltert = [e for e in gefiltert if e.imker == f_imker]
+        if f_von:
+            gefiltert = [e for e in gefiltert if e.zeitpunkt and e.zeitpunkt.date() >= f_von]
+        if f_bis:
+            gefiltert = [e for e in gefiltert if e.zeitpunkt and e.zeitpunkt.date() <= f_bis]
+
+        st.caption(f"{len(gefiltert)} von {len(eintraege)} Einträgen")
         if not eintraege:
             st.info("Für dieses Volk gibt es noch keine Einträge.")
-        for e in eintraege:
+        for e in gefiltert:
             render_editable_log_entry(e, imker_liste, volk_liste, vorgang_liste, show_volk=False)
 
     with tab2:
@@ -1402,9 +1536,12 @@ elif page == "Logbuch":
             volk = c2.selectbox("Welches Volk?", volk_liste, key=f"log_volk_{v}")
 
             st.markdown("##### :material/build: Vorgang & Zustand")
-            c3, c4 = st.columns(2)
-            vorgang = c3.selectbox("Vorgang/Aktion", vorgang_liste, key=f"log_vorgang_{v}")
-            status = c4.selectbox("Status-Update", STATUS_OPTIONS, key=f"log_status_{v}")
+            vorgang = st.pills(
+                "Vorgang/Aktion", vorgang_liste, default=vorgang_liste[0], key=f"log_vorgang_{v}"
+            )
+            if vorgang is None:
+                vorgang = vorgang_liste[0]
+            status = st.selectbox("Status-Update", STATUS_OPTIONS, key=f"log_status_{v}")
 
             if vorgang == VORGANG_SCHWARMKONTROLLE:
                 tage = int(get_setting("schwarm_timer_tage", "7") or 7)
@@ -1628,42 +1765,83 @@ elif page == "Kalender":
     tab1, tab2 = st.tabs([":material/event: Übersicht", ":material/beach_access: Abwesenheiten"])
 
     with tab1:
+        heute = datetime.date.today()
+        diese_woche_montag = heute - datetime.timedelta(days=heute.weekday())
+        bereich_start = diese_woche_montag - datetime.timedelta(days=7)
+        bereich_ende = diese_woche_montag + datetime.timedelta(days=21) - datetime.timedelta(days=1)
+
         db = get_db()
         try:
             offene_aufgaben = db.query(Aufgabe).filter(Aufgabe.erledigt == False).all()
-            log_grenze = datetime.datetime.now() - datetime.timedelta(days=14)
-            log_eintraege = db.query(LogEintrag).filter(LogEintrag.zeitpunkt >= log_grenze).order_by(LogEintrag.zeitpunkt.desc()).all()
+            log_eintraege = db.query(LogEintrag).filter(
+                LogEintrag.zeitpunkt >= datetime.datetime.combine(bereich_start, datetime.time.min),
+                LogEintrag.zeitpunkt <= datetime.datetime.combine(bereich_ende, datetime.time.max),
+            ).all()
             abwesenheiten = db.query(Abwesenheit).all()
         finally:
             db.close()
 
-        st.caption("Zeigt offene Aufgaben (inkl. automatischer Schwarm-Timer), Logbuch-Einträge der letzten 14 Tage und Abwesenheiten.")
+        ereignisse_pro_tag = {}
 
-        events = []
+        def _add_event(d, typ, text):
+            if d is not None and bereich_start <= d <= bereich_ende:
+                ereignisse_pro_tag.setdefault(d, []).append((typ, text))
+
         for a in offene_aufgaben:
             d = parse_datum(a.faellig_am)
-            if d:
-                praefix = "⏱ " if a.quelle == "schwarm_timer" else "✓ "
-                text = praefix + a.titel + (f" ({a.volk})" if a.volk else "") + f" — {a.zugewiesen_an}"
-                events.append((d, 1, text))
+            praefix = "⏱ " if a.quelle == "schwarm_timer" else ""
+            _add_event(d, "aufgabe", praefix + a.titel + (f" ({a.volk})" if a.volk else ""))
         for e in log_eintraege:
-            events.append((e.zeitpunkt.date(), 0, f"{e.volk}: {e.vorgang} — {e.imker}"))
+            _add_event(e.zeitpunkt.date(), "log", f"{e.volk}: {e.vorgang}")
         for ab in abwesenheiten:
-            if ab.von_datum:
-                events.append((ab.von_datum.date(), 2, f"{ab.person} abwesend bis {ab.bis_datum.strftime('%d.%m.%Y') if ab.bis_datum else '?'}"))
+            if ab.von_datum and ab.bis_datum:
+                cur = max(ab.von_datum.date(), bereich_start)
+                end = min(ab.bis_datum.date(), bereich_ende)
+                while cur <= end:
+                    _add_event(cur, "abwesend", f"{ab.person} abwesend")
+                    cur += datetime.timedelta(days=1)
 
-        events.sort(key=lambda x: (x[0], x[1]))
+        FARBEN = {"aufgabe": "#93C5FD", "log": "#D9A441", "abwesend": "#F0ABFC"}
+        st.caption(":material/task_alt: Aufgaben · :material/edit_note: Logbuch · :material/beach_access: Abwesenheit")
 
-        heute = datetime.date.today()
-        aktuelles_datum = None
-        if not events:
-            st.info("Aktuell keine Ereignisse im Kalender.")
-        for datum, _, text in events:
-            if datum != aktuelles_datum:
-                praefix = "Heute — " if datum == heute else ("" if datum < heute else "")
-                st.markdown(f"**{praefix}{datum.strftime('%d.%m.%Y')}**")
-                aktuelles_datum = datum
-            st.write("　" + text)
+        wochentag_namen = ["Mo", "Di", "Mi", "Do", "Fr", "Sa", "So"]
+        wochen_labels = ["Vorherige Woche", "Diese Woche", "Nächste Woche", "Übernächste Woche"]
+
+        for woche_idx in range(4):
+            woche_start = bereich_start + datetime.timedelta(weeks=woche_idx)
+            woche_ende = woche_start + datetime.timedelta(days=6)
+            hervorhebung = " :material/arrow_back:" if woche_idx == 1 else ""
+            st.markdown(
+                f"**{wochen_labels[woche_idx]}**{hervorhebung}  \n"
+                f"<span style='color:#8A8F9C;font-size:0.85em'>{woche_start.strftime('%d.%m.')} – {woche_ende.strftime('%d.%m.%Y')}</span>",
+                unsafe_allow_html=True,
+            )
+            cols = st.columns(7)
+            for i in range(7):
+                tag = woche_start + datetime.timedelta(days=i)
+                ist_heute = tag == heute
+                with cols[i]:
+                    box_style = (
+                        "background-color:rgba(217,164,65,0.22);border:1px solid rgba(217,164,65,0.6);"
+                        if ist_heute else "border:1px solid rgba(217,164,65,0.15);"
+                    )
+                    st.markdown(
+                        f"<div style='{box_style}border-radius:8px;padding:5px;min-height:70px;'>"
+                        f"<div style='font-size:0.68em;color:#8A8F9C'>{wochentag_namen[i]}</div>"
+                        f"<div style='font-weight:700;font-size:0.9em'>{tag.day}.{tag.month}.</div>"
+                        + "".join(
+                            f"<div style='font-size:0.62em;color:{FARBEN.get(typ, '#EDEDED')};"
+                            f"white-space:nowrap;overflow:hidden;text-overflow:ellipsis' title='{text}'>• {text}</div>"
+                            for typ, text in ereignisse_pro_tag.get(tag, [])[:3]
+                        )
+                        + (
+                            f"<div style='font-size:0.6em;color:#8A8F9C'>+{len(ereignisse_pro_tag.get(tag, [])) - 3} mehr</div>"
+                            if len(ereignisse_pro_tag.get(tag, [])) > 3 else ""
+                        )
+                        + "</div>",
+                        unsafe_allow_html=True,
+                    )
+            st.write("")
 
     with tab2:
         db = get_db()
@@ -1784,9 +1962,26 @@ elif page == "Verwaltung":
                 else:
                     st.warning("Dieser Vorgang existiert schon.")
             st.divider()
-            st.caption("Die Vorgänge mit dem Zusatz '(Stockkarte)' lösen im Logbuch spezielle Eingabefelder aus. 'Schwarmkontrolle' setzt automatisch einen Kontroll-Timer.")
+            st.caption("Die grau hinterlegten Vorgänge sind für die Stockkarte bzw. den Schwarm-Timer reserviert und können nicht geändert werden. Löschen entfernt einen Vorgang nur aus der Auswahlliste — bereits gespeicherte Einträge bleiben unverändert erhalten.")
             for v in db.query(Vorgang).order_by(Vorgang.name).all():
-                st.write("• " + v.name)
+                if v.name in GESCHUETZTE_VORGAENGE:
+                    st.markdown(f":material/lock: {v.name}")
+                    continue
+                c1, c2, c3 = st.columns([3, 1, 1])
+                neuer_vname = c1.text_input(
+                    "Umbenennen", value=v.name, key=f"rename_vorgang_{v.id}", label_visibility="collapsed"
+                )
+                if c2.button("", key=f"btn_rename_vorgang_{v.id}", icon=":material/edit:") and neuer_vname and neuer_vname != v.name:
+                    alter_vname = v.name
+                    v.name = neuer_vname
+                    for e in db.query(LogEintrag).filter(LogEintrag.vorgang == alter_vname).all():
+                        e.vorgang = neuer_vname
+                    db.commit()
+                    st.rerun()
+                if c3.button("", key=f"btn_del_vorgang_{v.id}", icon=":material/delete:"):
+                    db.delete(v)
+                    db.commit()
+                    st.rerun()
         finally:
             db.close()
 
@@ -1804,9 +1999,10 @@ elif page == "Verwaltung":
                     st.warning("Diese Person existiert schon.")
 
             st.divider()
-            st.markdown("**Bestehende Personen umbenennen**")
+            st.markdown("**Bestehende Personen umbenennen oder löschen**")
+            st.caption("Löschen entfernt eine Person nur aus der Auswahlliste — bereits gespeicherte Einträge behalten den bisherigen Namen.")
             for i in db.query(Imker).order_by(Imker.name).all():
-                c1, c2, c3 = st.columns([2, 2, 1])
+                c1, c2, c3, c4 = st.columns([2, 2, 1, 1])
                 c1.write("• " + i.name)
                 neuer_name = c2.text_input(
                     "Umbenennen", value=i.name, key=f"rename_imker_{i.id}", label_visibility="collapsed"
@@ -1822,6 +2018,10 @@ elif page == "Verwaltung":
                         a.zugewiesen_an = neuer_name
                     db.commit()
                     st.success(f"'{alter_name}' wurde zu '{neuer_name}' umbenannt.")
+                    st.rerun()
+                if c4.button("", key=f"btn_del_imker_{i.id}", icon=":material/delete:"):
+                    db.delete(i)
+                    db.commit()
                     st.rerun()
         finally:
             db.close()
@@ -1900,6 +2100,10 @@ elif page == "Verwaltung":
             st.success("Gespeichert.")
 
     with tab6:
+        if ist_dauerhafte_datenbank():
+            st.success("Datenbankverbindung aktiv: Daten werden dauerhaft extern gespeichert (Supabase).", icon=":material/cloud_done:")
+        else:
+            st.error("Achtung: Aktuell keine dauerhafte Datenbank verbunden — Daten gehen beim nächsten Neustart verloren!", icon=":material/cloud_off:")
         st.markdown(
             "Eure Daten liegen bereits dauerhaft und kostenlos in einer Cloud-Datenbank (Supabase) — "
             "unabhängig von Streamlit. Auch wenn du den App-Code komplett neu schreibst, bleiben die "
@@ -1935,6 +2139,30 @@ elif page == "Verwaltung":
             )
         else:
             c2.caption("Für Excel-Export werden 'pandas' und 'openpyxl' benötigt.")
+
+        st.divider()
+        st.markdown("###### :material/upload_file: Backup wiederherstellen")
+        st.warning(
+            "Das Hochladen eines Backups überschreibt ALLE aktuellen Daten unwiderruflich mit dem Inhalt der Datei!",
+            icon=":material/warning:",
+        )
+        hochgeladene_datei = st.file_uploader("JSON-Backup-Datei auswählen", type=["json"], key="backup_upload")
+        if hochgeladene_datei is not None:
+            bestaetigt = st.checkbox(
+                "Ich verstehe, dass alle aktuellen Daten überschrieben werden.",
+                key="backup_restore_confirm",
+            )
+            if st.button(
+                "Backup jetzt wiederherstellen", type="primary",
+                icon=":material/restore:", disabled=not bestaetigt,
+            ):
+                try:
+                    inhalt = json.load(hochgeladene_datei)
+                    stelle_backup_wieder_her(inhalt)
+                    st.success("Backup erfolgreich wiederhergestellt.")
+                    st.rerun()
+                except Exception as ex:
+                    st.error(f"Wiederherstellung fehlgeschlagen: {ex}")
 
 elif page == "Imker-Kasse":
     st.header("Imker-Kasse", icon=":material/payments:", divider="orange")
@@ -1995,6 +2223,15 @@ elif page == "Imker-Kasse":
         c1.metric("Einnahmen", f"{gesamt_einnahmen:.2f} €")
         c2.metric("Ausgaben", f"{gesamt_ausgaben:.2f} €")
         c3.metric("Kontostand", f"{kontostand:.2f} €")
+
+        if PANDAS_AVAILABLE and alle:
+            st.markdown("###### :material/trending_up: Vermögensentwicklung")
+            df_kasse = pd.DataFrame([
+                {"Datum": e.zeitpunkt, "Betrag": e.betrag if e.typ == "Einnahme" else -e.betrag}
+                for e in sorted(alle, key=lambda x: x.zeitpunkt)
+            ])
+            df_kasse["Kontostand"] = df_kasse["Betrag"].cumsum()
+            st.line_chart(df_kasse.set_index("Datum")["Kontostand"])
 
         st.divider()
         st.subheader("Wer schuldet wem? (Ausgaben-Ausgleich)")
@@ -2099,6 +2336,6 @@ elif page == "Imker-Kasse":
 # FOOTER
 # ---------------------------------------------------------------------------
 st.markdown(
-    '<div class="fixed-footer">🐝 Rettet die Bienen, scheißt auf die Bäume 🐝</div>',
+    '<div class="fixed-footer">:material/hive: Rettet die Bienen, scheißt auf die Bäume :material/hive:</div>',
     unsafe_allow_html=True,
 )

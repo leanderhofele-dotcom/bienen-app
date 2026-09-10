@@ -1,7 +1,9 @@
-streamlit>=1.32
+streamlit>=1.37
 sqlalchemy>=2.0
 streamlit-autorefresh
 psycopg2-binary
 requests
 fpdf2
 pandas
+openpyxl
+Pillow
