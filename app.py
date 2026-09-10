@@ -103,20 +103,14 @@ CUSTOM_CSS = """
 <style>
     .stApp {
         background-color: #16211B;
-        background-image:
-            radial-gradient(circle at 50% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
-            radial-gradient(circle at 0% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
-            radial-gradient(circle at 100% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent);
-        background-size: 64px 110px;
+        background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='52'%20height='90'%20viewBox='0%200%2052%2090'%3E%3Cg%20fill='none'%20stroke='%23D9A441'%20stroke-opacity='0.16'%20stroke-width='1.5'%3E%3Cpolygon%20points='0,-30%2026,-15%2026,15%200,30%20-26,15%20-26,-15'/%3E%3Cpolygon%20points='26,15%2052,30%2052,60%2026,75%200,60%200,30'/%3E%3C/g%3E%3C/svg%3E");
+        background-repeat: repeat;
         background-attachment: fixed;
     }
     section[data-testid="stSidebar"] {
         background-color: #182620;
-        background-image:
-            radial-gradient(circle at 50% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
-            radial-gradient(circle at 0% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent),
-            radial-gradient(circle at 100% 50%, transparent 24%, rgba(217,164,65,0.07) 25%, rgba(217,164,65,0.07) 26%, transparent 27%, transparent 74%, rgba(217,164,65,0.07) 75%, rgba(217,164,65,0.07) 76%, transparent 77%, transparent);
-        background-size: 64px 110px;
+        background-image: url("data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20width='52'%20height='90'%20viewBox='0%200%2052%2090'%3E%3Cg%20fill='none'%20stroke='%23D9A441'%20stroke-opacity='0.16'%20stroke-width='1.5'%3E%3Cpolygon%20points='0,-30%2026,-15%2026,15%200,30%20-26,15%20-26,-15'/%3E%3Cpolygon%20points='26,15%2052,30%2052,60%2026,75%200,60%200,30'/%3E%3C/g%3E%3C/svg%3E");
+        background-repeat: repeat;
         border-right: 1px solid rgba(217,164,65,0.15);
     }
 
